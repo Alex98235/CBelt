@@ -1,0 +1,287 @@
+#ifndef CBELT_H
+#define CBELT_H
+
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*---------------------------------------------------------------------------
+ * Helper macros for unique names
+ *--------------------------------------------------------------------------*/
+#define CBELT_CONCAT(a, b) a##b
+#define CBELT_CONCAT2(a, b) CBELT_CONCAT(a, b)
+#define CBELT_UNIQUE(prefix) CBELT_CONCAT2(prefix, __LINE__)
+
+/*---------------------------------------------------------------------------
+ * Types
+ *--------------------------------------------------------------------------*/
+typedef struct cbelt_test {
+  const char *name;
+  int (*func)(void);
+  struct cbelt_test *next;
+} cbelt_test_t;
+
+typedef struct cbelt_group {
+  const char *name;
+  void (*setup)(void);
+  void (*teardown)(void);
+  void (*group_setup)(void);
+  void (*group_teardown)(void);
+  struct cbelt_test *tests;
+  struct cbelt_group *next;
+  size_t test_count;
+} cbelt_group_t;
+
+/*---------------------------------------------------------------------------
+ * Internal registry
+ *--------------------------------------------------------------------------*/
+static cbelt_group_t *cbelt_groups = NULL;
+static void (*cbelt_global_setup)(void) = NULL;
+static void (*cbelt_global_teardown)(void) = NULL;
+
+/* Global pointer for tracking current group */
+static const char *cbelt_current_group_name = NULL;
+
+/*---------------------------------------------------------------------------
+ * Internal functions
+ *--------------------------------------------------------------------------*/
+static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
+  cbelt_group_t *g = cbelt_groups;
+  while (g) {
+    if (strcmp(g->name, name) == 0)
+      return g;
+    g = g->next;
+  }
+
+  g = (cbelt_group_t *)calloc(1, sizeof(cbelt_group_t));
+  g->name = strdup(name ? name : "(ungrouped)");
+  g->next = cbelt_groups;
+  cbelt_groups = g;
+  return g;
+}
+
+static void cbelt_add_test(cbelt_group_t *group, const char *name,
+                           int (*func)(void)) {
+  cbelt_test_t *test = (cbelt_test_t *)calloc(1, sizeof(cbelt_test_t));
+  test->name = strdup(name);
+  test->func = func;
+  test->next = group->tests;
+  group->tests = test;
+  group->test_count++;
+}
+
+/*---------------------------------------------------------------------------
+ * Public API for registration
+ *--------------------------------------------------------------------------*/
+void cbelt_register_test(const char *group_name, const char *test_name,
+                         int (*func)(void)) {
+  const char *name = group_name ? group_name : "(ungrouped)";
+  cbelt_group_t *group = cbelt_find_or_create_group(name);
+  cbelt_add_test(group, test_name, func);
+}
+
+void cbelt_set_group_setup(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->group_setup = func;
+}
+
+void cbelt_set_group_teardown(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->group_teardown = func;
+}
+
+void cbelt_set_test_setup(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->setup = func;
+}
+
+void cbelt_set_test_teardown(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->teardown = func;
+}
+
+void cbelt_set_global_setup(void (*func)(void)) { cbelt_global_setup = func; }
+
+void cbelt_set_global_teardown(void (*func)(void)) {
+  cbelt_global_teardown = func;
+}
+
+/*---------------------------------------------------------------------------
+ * Macros for GCC/Clang
+ *--------------------------------------------------------------------------*/
+#if defined(__GNUC__) || defined(__clang__)
+
+/* Each CBELT_GROUP sets the global current group name via a constructor */
+#define CBELT_GROUP(name)                                                      \
+  static void __attribute__((constructor)) CBELT_UNIQUE(_cbelt_set_group_)(    \
+      void) {                                                                  \
+    cbelt_current_group_name = name;                                           \
+  }
+
+#define CBELT_TEST(name)                                                       \
+  static int CBELT_UNIQUE(_cbelt_test_##name)(void);                           \
+  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+      _cbelt_register_##name)(void) {                                          \
+    cbelt_register_test(cbelt_current_group_name, #name,                       \
+                        CBELT_UNIQUE(_cbelt_test_##name));                     \
+  }                                                                            \
+  static int CBELT_UNIQUE(_cbelt_test_##name)(void)
+
+#define CBELT_GROUP_SETUP()                                                    \
+  static void CBELT_UNIQUE(_cbelt_group_setup)(void);                          \
+  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+      _cbelt_register_group_setup)(void) {                                     \
+    cbelt_set_group_setup(cbelt_current_group_name,                            \
+                          CBELT_UNIQUE(_cbelt_group_setup));                   \
+  }                                                                            \
+  static void CBELT_UNIQUE(_cbelt_group_setup)(void)
+
+#define CBELT_GROUP_TEARDOWN()                                                 \
+  static void CBELT_UNIQUE(_cbelt_group_teardown)(void);                       \
+  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+      _cbelt_register_group_teardown)(void) {                                  \
+    cbelt_set_group_teardown(cbelt_current_group_name,                         \
+                             CBELT_UNIQUE(_cbelt_group_teardown));             \
+  }                                                                            \
+  static void CBELT_UNIQUE(_cbelt_group_teardown)(void)
+
+#define CBELT_SETUP()                                                          \
+  static void CBELT_UNIQUE(_cbelt_setup)(void);                                \
+  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+      _cbelt_register_setup)(void) {                                           \
+    cbelt_set_test_setup(cbelt_current_group_name,                             \
+                         CBELT_UNIQUE(_cbelt_setup));                          \
+  }                                                                            \
+  static void CBELT_UNIQUE(_cbelt_setup)(void)
+
+#define CBELT_TEARDOWN()                                                       \
+  static void CBELT_UNIQUE(_cbelt_teardown)(void);                             \
+  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+      _cbelt_register_teardown)(void) {                                        \
+    cbelt_set_test_teardown(cbelt_current_group_name,                          \
+                            CBELT_UNIQUE(_cbelt_teardown));                    \
+  }                                                                            \
+  static void CBELT_UNIQUE(_cbelt_teardown)(void)
+
+#define CBELT_GLOBAL_SETUP()                                                   \
+  static void CBELT_UNIQUE(_cbelt_global_setup)(void);                         \
+  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+      _cbelt_register_global_setup)(void) {                                    \
+    cbelt_set_global_setup(CBELT_UNIQUE(_cbelt_global_setup));                 \
+  }                                                                            \
+  static void CBELT_UNIQUE(_cbelt_global_setup)(void)
+
+#define CBELT_GLOBAL_TEARDOWN()                                                \
+  static void CBELT_UNIQUE(_cbelt_global_teardown)(void);                      \
+  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+      _cbelt_register_global_teardown)(void) {                                 \
+    cbelt_set_global_teardown(CBELT_UNIQUE(_cbelt_global_teardown));           \
+  }                                                                            \
+  static void CBELT_UNIQUE(_cbelt_global_teardown)(void)
+
+/*---------------------------------------------------------------------------
+ * Fallback for other compilers
+ *--------------------------------------------------------------------------*/
+#else
+
+#define CBELT_GROUP(name)
+#define CBELT_TEST(name) static int CBELT_UNIQUE(_cbelt_test_##name)(void)
+#define CBELT_GROUP_SETUP()
+#define CBELT_GROUP_TEARDOWN()
+#define CBELT_SETUP()
+#define CBELT_TEARDOWN()
+#define CBELT_GLOBAL_SETUP()
+#define CBELT_GLOBAL_TEARDOWN()
+
+#endif
+
+/*---------------------------------------------------------------------------
+ * Assertions
+ *--------------------------------------------------------------------------*/
+#define cbelt_assert(expr)                                                     \
+  do {                                                                         \
+    if (!(expr)) {                                                             \
+      fprintf(stderr, "Assertion failed: %s at %s:%d\n", #expr, __FILE__,      \
+              __LINE__);                                                       \
+      return 1;                                                                \
+    }                                                                          \
+  } while (0)
+
+#define cbelt_assert_equal(expected, actual)                                   \
+  do {                                                                         \
+    if ((expected) != (actual)) {                                              \
+      fprintf(stderr, "Assertion failed: expected %lld, got %lld at %s:%d\n",  \
+              (long long)(expected), (long long)(actual), __FILE__, __LINE__); \
+      return 1;                                                                \
+    }                                                                          \
+  } while (0)
+
+/*---------------------------------------------------------------------------
+ * Test runner
+ *--------------------------------------------------------------------------*/
+static int cbelt_run_all_tests(void) {
+  int total_passed = 0;
+  int total_failed = 0;
+  cbelt_group_t *group = cbelt_groups;
+
+  if (cbelt_global_setup)
+    cbelt_global_setup();
+
+  while (group) {
+    printf("\n=== %s ===\n", group->name);
+
+    if (group->group_setup)
+      group->group_setup();
+
+    cbelt_test_t *test = group->tests;
+    while (test) {
+      printf("  %s ... ", test->name);
+      fflush(stdout);
+
+      if (group->setup)
+        group->setup();
+
+      int result = test->func();
+
+      if (group->teardown)
+        group->teardown();
+
+      if (result == 0) {
+        printf("PASSED\n");
+        total_passed++;
+      } else {
+        printf("FAILED\n");
+        total_failed++;
+      }
+
+      test = test->next;
+    }
+
+    if (group->group_teardown)
+      group->group_teardown();
+
+    group = group->next;
+  }
+
+  if (cbelt_global_teardown)
+    cbelt_global_teardown();
+
+  printf("\n================================\n");
+  printf("Total: %d passed, %d failed\n", total_passed, total_failed);
+  return total_failed > 0 ? 1 : 0;
+}
+
+/* Convenience main macro */
+#define CBELT_MAIN                                                             \
+  int main(void) { return cbelt_run_all_tests(); }
+
+#endif
