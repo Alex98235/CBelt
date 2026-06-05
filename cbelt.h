@@ -7,6 +7,16 @@
 #include <string.h>
 
 /*---------------------------------------------------------------------------
+ * ANSI color codes for terminal output
+ *--------------------------------------------------------------------------*/
+#define CBELT_COLOR_RED "\x1b[31m"
+#define CBELT_COLOR_GREEN "\x1b[32m"
+#define CBELT_COLOR_YELLOW "\x1b[33m"
+#define CBELT_COLOR_CYAN "\x1b[36m"
+#define CBELT_COLOR_BOLD "\x1b[1m"
+#define CBELT_COLOR_RESET "\x1b[0m"
+
+/*---------------------------------------------------------------------------
  * Helper macros for unique names
  *--------------------------------------------------------------------------*/
 #define CBELT_CONCAT(a, b) a##b
@@ -37,6 +47,7 @@ typedef struct cbelt_group {
  * Internal registry
  *--------------------------------------------------------------------------*/
 static cbelt_group_t *cbelt_groups = NULL;
+static cbelt_group_t *cbelt_groups_tail = NULL;
 static void (*cbelt_global_setup)(void) = NULL;
 static void (*cbelt_global_teardown)(void) = NULL;
 
@@ -56,8 +67,13 @@ static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
 
   g = (cbelt_group_t *)calloc(1, sizeof(cbelt_group_t));
   g->name = strdup(name ? name : "(ungrouped)");
-  g->next = cbelt_groups;
-  cbelt_groups = g;
+  g->next = NULL;
+  if (cbelt_groups_tail) {
+    cbelt_groups_tail->next = g;
+  } else {
+    cbelt_groups = g;
+  }
+  cbelt_groups_tail = g;
   return g;
 }
 
@@ -120,16 +136,20 @@ void cbelt_set_global_teardown(void (*func)(void)) {
  *--------------------------------------------------------------------------*/
 #if defined(__GNUC__) || defined(__clang__)
 
-/* Each CBELT_GROUP sets the global current group name via a constructor */
+/* Each CBELT_GROUP sets the global current group name via a constructor.
+   __COUNTER__ gives monotonically increasing values in source order, so using
+   it as the constructor priority guarantees all constructors execute in source
+   order regardless of how the linker orders .init_array entries.
+   Base 200 avoids the reserved 0-100 range. */
 #define CBELT_GROUP(name)                                                      \
-  static void __attribute__((constructor)) CBELT_UNIQUE(_cbelt_set_group_)(    \
-      void) {                                                                  \
+  static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
+      _cbelt_set_group_)(void) {                                               \
     cbelt_current_group_name = name;                                           \
   }
 
 #define CBELT_TEST(name)                                                       \
   static int CBELT_UNIQUE(_cbelt_test_##name)(void);                           \
-  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+  static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
       _cbelt_register_##name)(void) {                                          \
     cbelt_register_test(cbelt_current_group_name, #name,                       \
                         CBELT_UNIQUE(_cbelt_test_##name));                     \
@@ -138,7 +158,7 @@ void cbelt_set_global_teardown(void (*func)(void)) {
 
 #define CBELT_GROUP_SETUP()                                                    \
   static void CBELT_UNIQUE(_cbelt_group_setup)(void);                          \
-  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+  static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
       _cbelt_register_group_setup)(void) {                                     \
     cbelt_set_group_setup(cbelt_current_group_name,                            \
                           CBELT_UNIQUE(_cbelt_group_setup));                   \
@@ -147,7 +167,7 @@ void cbelt_set_global_teardown(void (*func)(void)) {
 
 #define CBELT_GROUP_TEARDOWN()                                                 \
   static void CBELT_UNIQUE(_cbelt_group_teardown)(void);                       \
-  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+  static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
       _cbelt_register_group_teardown)(void) {                                  \
     cbelt_set_group_teardown(cbelt_current_group_name,                         \
                              CBELT_UNIQUE(_cbelt_group_teardown));             \
@@ -156,7 +176,7 @@ void cbelt_set_global_teardown(void (*func)(void)) {
 
 #define CBELT_SETUP()                                                          \
   static void CBELT_UNIQUE(_cbelt_setup)(void);                                \
-  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+  static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
       _cbelt_register_setup)(void) {                                           \
     cbelt_set_test_setup(cbelt_current_group_name,                             \
                          CBELT_UNIQUE(_cbelt_setup));                          \
@@ -165,7 +185,7 @@ void cbelt_set_global_teardown(void (*func)(void)) {
 
 #define CBELT_TEARDOWN()                                                       \
   static void CBELT_UNIQUE(_cbelt_teardown)(void);                             \
-  static void __attribute__((constructor)) CBELT_UNIQUE(                       \
+  static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
       _cbelt_register_teardown)(void) {                                        \
     cbelt_set_test_teardown(cbelt_current_group_name,                          \
                             CBELT_UNIQUE(_cbelt_teardown));                    \
@@ -237,7 +257,9 @@ static int cbelt_run_all_tests(void) {
     cbelt_global_setup();
 
   while (group) {
-    printf("\n=== %s ===\n", group->name);
+    printf("\n" CBELT_COLOR_BOLD CBELT_COLOR_CYAN "=== %s ===" CBELT_COLOR_RESET
+           "\n",
+           group->name);
 
     if (group->group_setup)
       group->group_setup();
@@ -256,10 +278,10 @@ static int cbelt_run_all_tests(void) {
         group->teardown();
 
       if (result == 0) {
-        printf("PASSED\n");
+        printf(CBELT_COLOR_GREEN "PASSED" CBELT_COLOR_RESET "\n");
         total_passed++;
       } else {
-        printf("FAILED\n");
+        printf(CBELT_COLOR_RED "FAILED" CBELT_COLOR_RESET "\n");
         total_failed++;
       }
 
@@ -275,8 +297,11 @@ static int cbelt_run_all_tests(void) {
   if (cbelt_global_teardown)
     cbelt_global_teardown();
 
-  printf("\n================================\n");
-  printf("Total: %d passed, %d failed\n", total_passed, total_failed);
+  printf("\n" CBELT_COLOR_BOLD
+         "================================\n" CBELT_COLOR_RESET);
+  printf(CBELT_COLOR_GREEN "%d passed" CBELT_COLOR_RESET ", " CBELT_COLOR_RED
+                           "%d failed" CBELT_COLOR_RESET "\n",
+         total_passed, total_failed);
   return total_failed > 0 ? 1 : 0;
 }
 
