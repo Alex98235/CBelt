@@ -176,7 +176,9 @@ CBELT_TEST(test_teardown_was_called) {
   return 0;
 }
 
-/*---------------------------------------------------------------------------
- * Main
- *--------------------------------------------------------------------------*/
-CBELT_MAIN
+CBELT_GROUP("uncategorized")
+
+CBELT_TEST(test_intentional_failure) {
+  cbelt_assert(1 == 0);
+  return 0;
+}

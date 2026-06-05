@@ -44,92 +44,23 @@ typedef struct cbelt_group {
 } cbelt_group_t;
 
 /*---------------------------------------------------------------------------
- * Internal registry
- *--------------------------------------------------------------------------*/
-static cbelt_group_t *cbelt_groups = NULL;
-static cbelt_group_t *cbelt_groups_tail = NULL;
-static void (*cbelt_global_setup)(void) = NULL;
-static void (*cbelt_global_teardown)(void) = NULL;
-
-/* Global pointer for tracking current group */
-static const char *cbelt_current_group_name = NULL;
-
-/*---------------------------------------------------------------------------
- * Internal functions
- *--------------------------------------------------------------------------*/
-static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
-  cbelt_group_t *g = cbelt_groups;
-  while (g) {
-    if (strcmp(g->name, name) == 0)
-      return g;
-    g = g->next;
-  }
-
-  g = (cbelt_group_t *)calloc(1, sizeof(cbelt_group_t));
-  g->name = strdup(name ? name : "(ungrouped)");
-  g->next = NULL;
-  if (cbelt_groups_tail) {
-    cbelt_groups_tail->next = g;
-  } else {
-    cbelt_groups = g;
-  }
-  cbelt_groups_tail = g;
-  return g;
-}
-
-static void cbelt_add_test(cbelt_group_t *group, const char *name,
-                           int (*func)(void)) {
-  cbelt_test_t *test = (cbelt_test_t *)calloc(1, sizeof(cbelt_test_t));
-  test->name = strdup(name);
-  test->func = func;
-  test->next = group->tests;
-  group->tests = test;
-  group->test_count++;
-}
-
-/*---------------------------------------------------------------------------
- * Public API for registration
+ * Public API declarations
  *--------------------------------------------------------------------------*/
 void cbelt_register_test(const char *group_name, const char *test_name,
-                         int (*func)(void)) {
-  const char *name = group_name ? group_name : "(ungrouped)";
-  cbelt_group_t *group = cbelt_find_or_create_group(name);
-  cbelt_add_test(group, test_name, func);
-}
+                         int (*func)(void));
+void cbelt_set_group_setup(const char *group_name, void (*func)(void));
+void cbelt_set_group_teardown(const char *group_name, void (*func)(void));
+void cbelt_set_test_setup(const char *group_name, void (*func)(void));
+void cbelt_set_test_teardown(const char *group_name, void (*func)(void));
+void cbelt_set_global_setup(void (*func)(void));
+void cbelt_set_global_teardown(void (*func)(void));
+int cbelt_run_all_tests(void);
 
-void cbelt_set_group_setup(const char *group_name, void (*func)(void)) {
-  if (!group_name)
-    return;
-  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
-  group->group_setup = func;
-}
-
-void cbelt_set_group_teardown(const char *group_name, void (*func)(void)) {
-  if (!group_name)
-    return;
-  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
-  group->group_teardown = func;
-}
-
-void cbelt_set_test_setup(const char *group_name, void (*func)(void)) {
-  if (!group_name)
-    return;
-  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
-  group->setup = func;
-}
-
-void cbelt_set_test_teardown(const char *group_name, void (*func)(void)) {
-  if (!group_name)
-    return;
-  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
-  group->teardown = func;
-}
-
-void cbelt_set_global_setup(void (*func)(void)) { cbelt_global_setup = func; }
-
-void cbelt_set_global_teardown(void (*func)(void)) {
-  cbelt_global_teardown = func;
-}
+/* Globals referenced by macros (declared extern in non-implementation TUs) */
+#ifndef CBELT_IMPLEMENTATION
+extern const char *cbelt_current_group_name;
+extern char cbelt_error_buf[512];
+#endif
 
 /*---------------------------------------------------------------------------
  * Macros for GCC/Clang
@@ -225,13 +156,13 @@ void cbelt_set_global_teardown(void (*func)(void)) {
 #endif
 
 /*---------------------------------------------------------------------------
- * Assertions
+ * Assertions (defer messages to cbelt_error_buf instead of printing)
  *--------------------------------------------------------------------------*/
 #define cbelt_assert(expr)                                                     \
   do {                                                                         \
     if (!(expr)) {                                                             \
-      fprintf(stderr, "Assertion failed: %s at %s:%d\n", #expr, __FILE__,      \
-              __LINE__);                                                       \
+      snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                       \
+               "Assertion failed: %s at %s:%d", #expr, __FILE__, __LINE__);    \
       return 1;                                                                \
     }                                                                          \
   } while (0)
@@ -239,16 +170,116 @@ void cbelt_set_global_teardown(void (*func)(void)) {
 #define cbelt_assert_equal(expected, actual)                                   \
   do {                                                                         \
     if ((expected) != (actual)) {                                              \
-      fprintf(stderr, "Assertion failed: expected %lld, got %lld at %s:%d\n",  \
-              (long long)(expected), (long long)(actual), __FILE__, __LINE__); \
+      snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                       \
+               "Assertion failed: expected %lld, got %lld at %s:%d",           \
+               (long long)(expected), (long long)(actual), __FILE__,           \
+               __LINE__);                                                      \
       return 1;                                                                \
     }                                                                          \
   } while (0)
 
+/* Convenience main macro */
+#define CBELT_MAIN                                                             \
+  int main(void) { return cbelt_run_all_tests(); }
+
 /*---------------------------------------------------------------------------
- * Test runner
+ * Implementation (define CBELT_IMPLEMENTATION in exactly one .c file)
  *--------------------------------------------------------------------------*/
-static int cbelt_run_all_tests(void) {
+#ifdef CBELT_IMPLEMENTATION
+
+/* Internal globals */
+cbelt_group_t *cbelt_groups = NULL;
+cbelt_group_t *cbelt_groups_tail = NULL;
+void (*cbelt_global_setup)(void) = NULL;
+void (*cbelt_global_teardown)(void) = NULL;
+const char *cbelt_current_group_name = NULL;
+char cbelt_error_buf[512];
+
+/* Internal helpers */
+static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
+  cbelt_group_t *g = cbelt_groups;
+  while (g) {
+    if (strcmp(g->name, name) == 0)
+      return g;
+    g = g->next;
+  }
+
+  g = (cbelt_group_t *)calloc(1, sizeof(cbelt_group_t));
+  g->name = strdup(name ? name : "(ungrouped)");
+  g->next = NULL;
+  if (cbelt_groups_tail) {
+    cbelt_groups_tail->next = g;
+  } else {
+    cbelt_groups = g;
+  }
+  cbelt_groups_tail = g;
+  return g;
+}
+
+static void cbelt_add_test(cbelt_group_t *group, const char *name,
+                           int (*func)(void)) {
+  cbelt_test_t *test = (cbelt_test_t *)calloc(1, sizeof(cbelt_test_t));
+  test->name = strdup(name);
+  test->func = func;
+  test->next = group->tests;
+  group->tests = test;
+  group->test_count++;
+}
+
+static void cbelt_print_indented(const char *msg) {
+  const char *p = msg;
+  const char *nl;
+  while ((nl = strchr(p, '\n')) != NULL) {
+    fprintf(stderr, "    %.*s\n", (int)(nl - p), p);
+    p = nl + 1;
+  }
+  if (*p)
+    fprintf(stderr, "    %s\n", p);
+}
+
+/* Public API implementation */
+void cbelt_register_test(const char *group_name, const char *test_name,
+                         int (*func)(void)) {
+  const char *name = group_name ? group_name : "(ungrouped)";
+  cbelt_group_t *group = cbelt_find_or_create_group(name);
+  cbelt_add_test(group, test_name, func);
+}
+
+void cbelt_set_group_setup(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->group_setup = func;
+}
+
+void cbelt_set_group_teardown(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->group_teardown = func;
+}
+
+void cbelt_set_test_setup(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->setup = func;
+}
+
+void cbelt_set_test_teardown(const char *group_name, void (*func)(void)) {
+  if (!group_name)
+    return;
+  cbelt_group_t *group = cbelt_find_or_create_group(group_name);
+  group->teardown = func;
+}
+
+void cbelt_set_global_setup(void (*func)(void)) { cbelt_global_setup = func; }
+
+void cbelt_set_global_teardown(void (*func)(void)) {
+  cbelt_global_teardown = func;
+}
+
+int cbelt_run_all_tests(void) {
   int total_passed = 0;
   int total_failed = 0;
   cbelt_group_t *group = cbelt_groups;
@@ -266,8 +297,7 @@ static int cbelt_run_all_tests(void) {
 
     cbelt_test_t *test = group->tests;
     while (test) {
-      printf("  %s ... ", test->name);
-      fflush(stdout);
+      cbelt_error_buf[0] = '\0';
 
       if (group->setup)
         group->setup();
@@ -278,10 +308,12 @@ static int cbelt_run_all_tests(void) {
         group->teardown();
 
       if (result == 0) {
-        printf(CBELT_COLOR_GREEN "PASSED" CBELT_COLOR_RESET "\n");
+        printf("  " CBELT_COLOR_GREEN "%s" CBELT_COLOR_RESET "\n", test->name);
         total_passed++;
       } else {
-        printf(CBELT_COLOR_RED "FAILED" CBELT_COLOR_RESET "\n");
+        printf("  " CBELT_COLOR_RED "%s" CBELT_COLOR_RESET "\n", test->name);
+        if (cbelt_error_buf[0])
+          cbelt_print_indented(cbelt_error_buf);
         total_failed++;
       }
 
@@ -305,8 +337,6 @@ static int cbelt_run_all_tests(void) {
   return total_failed > 0 ? 1 : 0;
 }
 
-/* Convenience main macro */
-#define CBELT_MAIN                                                             \
-  int main(void) { return cbelt_run_all_tests(); }
+#endif /* CBELT_IMPLEMENTATION */
 
-#endif
+#endif /* CBELT_H */
