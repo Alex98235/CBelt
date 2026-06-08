@@ -42,14 +42,15 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
 
 ## Features
 
-- **Single header**: drop `cbelt.h` into your project, no build system changes needed.
+- **Single header**: drop `cbelt.h` into your project and start testing!
 - **Automatic test registration**: `CBELT_TEST(name)` writes a constructor that registers itself before `main()` runs.
 - **Test groups**: organize tests into named groups with `CBELT_GROUP("name")`.
 - **Assertions**: `cbelt_assert(expr)` and `cbelt_assert_equal(expected, actual)` with automatic failure messages.
-- **Sandboxed execution** (Linux): tests run in isolated child processes via `fork()` so that crashes and signals don't bring down the whole suite.
-- **Timeouts**: configurable per-test and global timeouts; hung tests are detected and reported instead of hanging forever.
-- **Crash / signal reporting**: tests that segfault or crash are reported with the signal name and number.
-- **Error propagation across fork**: error messages from failed assertions in the child process are communicated back to the parent via a pipe.
+- ***Linux-only-features***:
+  - **Sandboxed execution**: tests run in isolated child processes via `fork()` so that crashes and signals don't bring down the whole suite.
+  - **Timeouts**: configurable per-test and global timeouts; hung tests are detected and reported instead of hanging forever.
+  - **Crash / signal reporting**: tests that segfault or crash are reported with the signal name and number.
+  - **Error propagation across fork**: error messages from failed assertions in the child process are communicated back to the parent via a pipe.
 - **Setup / teardown hooks**: per-test, per-group, and global lifecycle functions.
 - **Colored output**: pass/fail results printed with ANSI colors in the terminal.
 - **`CBELT_MAIN` macro**: provides a ready-to-use `main()` so you don't have to write one.
