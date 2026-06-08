@@ -25,14 +25,29 @@
 // #define CBELT_DISABLE_SPINNER
 
 /*---------------------------------------------------------------------------
+ * Color configuration
+ * Uncomment the line below to disable colored output
+ *--------------------------------------------------------------------------*/
+// #define CBELT_DISABLE_COLOR
+
+/*---------------------------------------------------------------------------
  * ANSI color codes for terminal output
  *--------------------------------------------------------------------------*/
+#ifndef CBELT_DISABLE_COLOR
 #define CBELT_COLOR_RED "\x1b[31m"
 #define CBELT_COLOR_GREEN "\x1b[32m"
 #define CBELT_COLOR_YELLOW "\x1b[33m"
 #define CBELT_COLOR_CYAN "\x1b[36m"
 #define CBELT_COLOR_BOLD "\x1b[1m"
 #define CBELT_COLOR_RESET "\x1b[0m"
+#else
+#define CBELT_COLOR_RED ""
+#define CBELT_COLOR_GREEN ""
+#define CBELT_COLOR_YELLOW ""
+#define CBELT_COLOR_CYAN ""
+#define CBELT_COLOR_BOLD ""
+#define CBELT_COLOR_RESET ""
+#endif
 
 /*---------------------------------------------------------------------------
  * Terminal control macros
@@ -551,9 +566,19 @@ static void cbelt_spinner_update_result(const char *test_name,
 #endif
 
   if (result == TEST_SUCCESS) {
-    printf("  " CBELT_COLOR_GREEN "%s" CBELT_COLOR_RESET "\n", test_name);
+    printf("  " CBELT_COLOR_GREEN "%s"
+#ifdef CBELT_DISABLE_COLOR
+           ": PASSED"
+#endif
+           CBELT_COLOR_RESET "\n",
+           test_name);
   } else {
-    printf("  " CBELT_COLOR_RED "%s" CBELT_COLOR_RESET "\n", test_name);
+    printf("  " CBELT_COLOR_RED "%s"
+#ifdef CBELT_DISABLE_COLOR
+           ": FAILED"
+#endif
+           CBELT_COLOR_RESET "\n",
+           test_name);
     if (cbelt_error_buf[0]) {
       cbelt_print_indented(cbelt_error_buf);
     }
