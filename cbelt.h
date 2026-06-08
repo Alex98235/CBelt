@@ -56,9 +56,12 @@ void cbelt_set_global_setup(void (*func)(void));
 void cbelt_set_global_teardown(void (*func)(void));
 int cbelt_run_all_tests(void);
 
-/* Globals referenced by macros (declared extern in non-implementation TUs) */
+/* Each non-implementation translation unit gets its own file-scope
+   cbelt_current_group_name so that constructors in one .c file never
+   interfere with constructors in another. The implementation TU uses
+   a genuine global (defined below). */
 #ifndef CBELT_IMPLEMENTATION
-extern const char *cbelt_current_group_name;
+static const char *cbelt_current_group_name = NULL;
 extern char cbelt_error_buf[512];
 #endif
 
