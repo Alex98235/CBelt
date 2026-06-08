@@ -513,9 +513,6 @@ static void cbelt_spinner_stop(void) {
 // Start spinner in background process
 static void cbelt_spinner_start(const char *test_name) {
 #ifdef CBELT_DISABLE_SPINNER
-  // Spinner disabled - just print test name
-  printf("  %s...", test_name);
-  fflush(stdout);
   return;
 #else
 #ifdef __linux__
@@ -555,8 +552,6 @@ static void cbelt_spinner_update_result(const char *test_name,
 
                                         TestResult result) {
 #ifdef CBELT_DISABLE_SPINNER
-  printf(CBELT_CLEAR_LINE);
-  fflush(stdout);
 #else
 #ifdef __linux__
   if (spinner_pid != 0) {
