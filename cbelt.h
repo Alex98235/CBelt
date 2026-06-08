@@ -26,18 +26,25 @@
 /*---------------------------------------------------------------------------
  * Types
  *--------------------------------------------------------------------------*/
+
+typedef enum { TEST_SUCCESS, TEST_FAILURE, TEST_CRASH } TestResult;
+
+typedef void (*setup_func_t)(void);
+typedef void (*teardown_func_t)(void);
+typedef TestResult (*test_func_t)(void);
+
 typedef struct cbelt_test {
   const char *name;
-  int (*func)(void);
+  test_func_t func;
   struct cbelt_test *next;
 } cbelt_test_t;
 
 typedef struct cbelt_group {
   const char *name;
-  void (*setup)(void);
-  void (*teardown)(void);
-  void (*group_setup)(void);
-  void (*group_teardown)(void);
+  setup_func_t setup;
+  teardown_func_t teardown;
+  setup_func_t group_setup;
+  teardown_func_t group_teardown;
   struct cbelt_test *tests;
   struct cbelt_group *next;
   size_t test_count;
@@ -47,13 +54,13 @@ typedef struct cbelt_group {
  * Public API declarations
  *--------------------------------------------------------------------------*/
 void cbelt_register_test(const char *group_name, const char *test_name,
-                         int (*func)(void));
-void cbelt_set_group_setup(const char *group_name, void (*func)(void));
-void cbelt_set_group_teardown(const char *group_name, void (*func)(void));
-void cbelt_set_test_setup(const char *group_name, void (*func)(void));
-void cbelt_set_test_teardown(const char *group_name, void (*func)(void));
-void cbelt_set_global_setup(void (*func)(void));
-void cbelt_set_global_teardown(void (*func)(void));
+                         test_func_t func);
+void cbelt_set_group_setup(const char *group_name, setup_func_t func);
+void cbelt_set_group_teardown(const char *group_name, teardown_func_t func);
+void cbelt_set_test_setup(const char *group_name, setup_func_t func);
+void cbelt_set_test_teardown(const char *group_name, teardown_func_t func);
+void cbelt_set_global_setup(setup_func_t func);
+void cbelt_set_global_teardown(teardown_func_t func);
 int cbelt_run_all_tests(void);
 
 /* Each non-implementation translation unit gets its own file-scope
@@ -70,10 +77,10 @@ extern char cbelt_error_buf[512];
  *--------------------------------------------------------------------------*/
 #if defined(__GNUC__) || defined(__clang__)
 
-/* Each CBELT_GROUP sets the global current group name via a constructor.
+/* Each CBELT_GROUP sets the per-TU current group name via a constructor.
    __COUNTER__ gives monotonically increasing values in source order, so using
    it as the constructor priority guarantees all constructors execute in source
-   order regardless of how the linker orders .init_array entries.
+   order within a translation unit.
    Base 200 avoids the reserved 0-100 range. */
 #define CBELT_GROUP(name)                                                      \
   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
@@ -82,13 +89,13 @@ extern char cbelt_error_buf[512];
   }
 
 #define CBELT_TEST(name)                                                       \
-  static int CBELT_UNIQUE(_cbelt_test_##name)(void);                           \
+  static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void);                    \
   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
       _cbelt_register_##name)(void) {                                          \
     cbelt_register_test(cbelt_current_group_name, #name,                       \
                         CBELT_UNIQUE(_cbelt_test_##name));                     \
   }                                                                            \
-  static int CBELT_UNIQUE(_cbelt_test_##name)(void)
+  static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void)
 
 #define CBELT_GROUP_SETUP()                                                    \
   static void CBELT_UNIQUE(_cbelt_group_setup)(void);                          \
@@ -148,7 +155,8 @@ extern char cbelt_error_buf[512];
 #else
 
 #define CBELT_GROUP(name)
-#define CBELT_TEST(name) static int CBELT_UNIQUE(_cbelt_test_##name)(void)
+#define CBELT_TEST(name)                                                       \
+  static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void)
 #define CBELT_GROUP_SETUP()
 #define CBELT_GROUP_TEARDOWN()
 #define CBELT_SETUP()
@@ -193,8 +201,8 @@ extern char cbelt_error_buf[512];
 /* Internal globals */
 cbelt_group_t *cbelt_groups = NULL;
 cbelt_group_t *cbelt_groups_tail = NULL;
-void (*cbelt_global_setup)(void) = NULL;
-void (*cbelt_global_teardown)(void) = NULL;
+setup_func_t cbelt_global_setup = NULL;
+teardown_func_t cbelt_global_teardown = NULL;
 const char *cbelt_current_group_name = NULL;
 char cbelt_error_buf[512];
 
@@ -220,7 +228,7 @@ static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
 }
 
 static void cbelt_add_test(cbelt_group_t *group, const char *name,
-                           int (*func)(void)) {
+                           test_func_t func) {
   cbelt_test_t *test = (cbelt_test_t *)calloc(1, sizeof(cbelt_test_t));
   test->name = strdup(name);
   test->func = func;
@@ -242,43 +250,43 @@ static void cbelt_print_indented(const char *msg) {
 
 /* Public API implementation */
 void cbelt_register_test(const char *group_name, const char *test_name,
-                         int (*func)(void)) {
+                         test_func_t func) {
   const char *name = group_name ? group_name : "(ungrouped)";
   cbelt_group_t *group = cbelt_find_or_create_group(name);
   cbelt_add_test(group, test_name, func);
 }
 
-void cbelt_set_group_setup(const char *group_name, void (*func)(void)) {
+void cbelt_set_group_setup(const char *group_name, setup_func_t func) {
   if (!group_name)
     return;
   cbelt_group_t *group = cbelt_find_or_create_group(group_name);
   group->group_setup = func;
 }
 
-void cbelt_set_group_teardown(const char *group_name, void (*func)(void)) {
+void cbelt_set_group_teardown(const char *group_name, teardown_func_t func) {
   if (!group_name)
     return;
   cbelt_group_t *group = cbelt_find_or_create_group(group_name);
   group->group_teardown = func;
 }
 
-void cbelt_set_test_setup(const char *group_name, void (*func)(void)) {
+void cbelt_set_test_setup(const char *group_name, setup_func_t func) {
   if (!group_name)
     return;
   cbelt_group_t *group = cbelt_find_or_create_group(group_name);
   group->setup = func;
 }
 
-void cbelt_set_test_teardown(const char *group_name, void (*func)(void)) {
+void cbelt_set_test_teardown(const char *group_name, teardown_func_t func) {
   if (!group_name)
     return;
   cbelt_group_t *group = cbelt_find_or_create_group(group_name);
   group->teardown = func;
 }
 
-void cbelt_set_global_setup(void (*func)(void)) { cbelt_global_setup = func; }
+void cbelt_set_global_setup(setup_func_t func) { cbelt_global_setup = func; }
 
-void cbelt_set_global_teardown(void (*func)(void)) {
+void cbelt_set_global_teardown(teardown_func_t func) {
   cbelt_global_teardown = func;
 }
 
