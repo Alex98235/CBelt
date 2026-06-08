@@ -5,7 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#ifdef __linux__
+#include <errno.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 /*---------------------------------------------------------------------------
  * ANSI color codes for terminal output
  *--------------------------------------------------------------------------*/
@@ -36,6 +42,7 @@ typedef TestResult (*test_func_t)(void);
 typedef struct cbelt_test {
   const char *name;
   test_func_t func;
+  int timeout_s; // 0 = use default, positive = seconds, negative = no timeout
   struct cbelt_test *next;
 } cbelt_test_t;
 
@@ -51,16 +58,28 @@ typedef struct cbelt_group {
 } cbelt_group_t;
 
 /*---------------------------------------------------------------------------
+ * Magic values
+ *--------------------------------------------------------------------------*/
+#define CBELT_SANDBOX_DEFAULT_TIMEOUT_S 30
+
+/*---------------------------------------------------------------------------
  * Public API declarations
  *--------------------------------------------------------------------------*/
 void cbelt_register_test(const char *group_name, const char *test_name,
                          test_func_t func);
+void cbelt_register_test_with_timeout(const char *group_name,
+                                      const char *test_name, test_func_t func,
+                                      int timeout);
 void cbelt_set_group_setup(const char *group_name, setup_func_t func);
 void cbelt_set_group_teardown(const char *group_name, teardown_func_t func);
 void cbelt_set_test_setup(const char *group_name, setup_func_t func);
 void cbelt_set_test_teardown(const char *group_name, teardown_func_t func);
 void cbelt_set_global_setup(setup_func_t func);
 void cbelt_set_global_teardown(teardown_func_t func);
+
+void cbelt_set_default_timeout(int seconds);
+
+TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s);
 int cbelt_run_all_tests(void);
 
 /* Each non-implementation translation unit gets its own file-scope
@@ -96,6 +115,18 @@ extern char cbelt_error_buf[512];
                         CBELT_UNIQUE(_cbelt_test_##name));                     \
   }                                                                            \
   static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void)
+
+#define CBELT_TEST_TIMEOUT(name, timeout_s)                                    \
+  static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void);                    \
+  static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(    \
+      _cbelt_register_##name)(void) {                                          \
+    cbelt_register_test_with_timeout(cbelt_current_group_name, #name,          \
+                                     CBELT_UNIQUE(_cbelt_test_##name),         \
+                                     timeout_s);                               \
+  }                                                                            \
+  static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void)
+
+#define CBELT_TEST_NO_TIMEOUT(name) CBELT_TEST_TIMEOUT(name, -1)
 
 #define CBELT_GROUP_SETUP()                                                    \
   static void CBELT_UNIQUE(_cbelt_group_setup)(void);                          \
@@ -167,7 +198,7 @@ extern char cbelt_error_buf[512];
 #endif
 
 /*---------------------------------------------------------------------------
- * Assertions (defer messages to cbelt_error_buf instead of printing)
+ * Assertions
  *--------------------------------------------------------------------------*/
 #define cbelt_assert(expr)                                                     \
   do {                                                                         \
@@ -205,6 +236,7 @@ setup_func_t cbelt_global_setup = NULL;
 teardown_func_t cbelt_global_teardown = NULL;
 const char *cbelt_current_group_name = NULL;
 char cbelt_error_buf[512];
+static int cbelt_global_default_timeout_s = CBELT_SANDBOX_DEFAULT_TIMEOUT_S;
 
 /* Internal helpers */
 static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
@@ -228,11 +260,12 @@ static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
 }
 
 static void cbelt_add_test(cbelt_group_t *group, const char *name,
-                           test_func_t func) {
+                           test_func_t func, int timeout_s) {
   cbelt_test_t *test = (cbelt_test_t *)calloc(1, sizeof(cbelt_test_t));
   test->name = strdup(name);
   test->func = func;
   test->next = group->tests;
+  test->timeout_s = timeout_s;
   group->tests = test;
   group->test_count++;
 }
@@ -253,7 +286,15 @@ void cbelt_register_test(const char *group_name, const char *test_name,
                          test_func_t func) {
   const char *name = group_name ? group_name : "(ungrouped)";
   cbelt_group_t *group = cbelt_find_or_create_group(name);
-  cbelt_add_test(group, test_name, func);
+  cbelt_add_test(group, test_name, func, 0);
+}
+
+void cbelt_register_test_with_timeout(const char *group_name,
+                                      const char *test_name, test_func_t func,
+                                      int timeout_s) {
+  const char *name = group_name ? group_name : "(ungrouped)";
+  cbelt_group_t *group = cbelt_find_or_create_group(name);
+  cbelt_add_test(group, test_name, func, timeout_s);
 }
 
 void cbelt_set_group_setup(const char *group_name, setup_func_t func) {
@@ -290,6 +331,96 @@ void cbelt_set_global_teardown(teardown_func_t func) {
   cbelt_global_teardown = func;
 }
 
+void cbelt_set_default_timeout(int seconds) {
+  if (seconds > 0) {
+    cbelt_global_default_timeout_s = seconds;
+  } else if (seconds < 0) {
+    cbelt_global_default_timeout_s = -1; // No timeout
+  }
+}
+
+TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
+#ifdef __linux__
+  int pipefd[2];
+  if (pipe(pipefd) == -1) {
+    // Pipe creation failed - fall back to no error reporting
+    perror("pipe");
+    return func();
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    fprintf(stderr,
+            CBELT_COLOR_YELLOW
+            "Warning: fork() failed (%s) - running test in-process without "
+            "isolation\n" CBELT_COLOR_RESET,
+            strerror(errno));
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return func();
+  }
+
+  if (pid == 0) {
+    close(pipefd[0]);
+
+    // Set timeout unless its a negative value
+    if (timeout_s > 0) {
+      alarm(timeout_s);
+    }
+
+    int result = func();
+
+    // Send error message to parent if there's one
+    if (cbelt_error_buf[0] != '\0') {
+      write(pipefd[1], cbelt_error_buf, strlen(cbelt_error_buf) + 1);
+    }
+
+    close(pipefd[1]);
+    exit(result);
+  }
+
+  close(pipefd[1]);
+
+  // Read error message from child (non-blocking or with timeout)
+  ssize_t bytes_read =
+      read(pipefd[0], cbelt_error_buf, sizeof(cbelt_error_buf) - 1);
+  if (bytes_read > 0) {
+    cbelt_error_buf[bytes_read] = '\0';
+  } else {
+    cbelt_error_buf[0] = '\0';
+  }
+  close(pipefd[0]);
+
+  int status;
+  pid_t wait_result = waitpid(pid, &status, 0);
+
+  if (wait_result == -1) {
+    perror("waitpid");
+    return TEST_FAILURE;
+  }
+
+  if (WIFEXITED(status)) {
+    return WEXITSTATUS(status) == 0 ? TEST_SUCCESS : TEST_FAILURE;
+  } else if (WIFSIGNALED(status)) {
+    int sig = WTERMSIG(status);
+    if (sig == SIGALRM) {
+      snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),
+               "Test timed out after %d seconds (infinite loop or hang)\n",
+               timeout_s);
+    } else {
+      snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),
+               "Test crashed with signal: %d (%s)\n", sig, strsignal(sig));
+    }
+
+    return TEST_CRASH;
+  }
+
+  return TEST_FAILURE;
+#else
+  return func();
+#endif
+}
+
 int cbelt_run_all_tests(void) {
   int total_passed = 0;
   int total_failed = 0;
@@ -308,17 +439,24 @@ int cbelt_run_all_tests(void) {
 
     cbelt_test_t *test = group->tests;
     while (test) {
+      // Reset error buffer and timeout for this test
       cbelt_error_buf[0] = '\0';
+      int timeout_s = cbelt_global_default_timeout_s;
+
+      // Override timeout with per-test timeout if set
+      if (test->timeout_s != 0) {
+        timeout_s = test->timeout_s;
+      }
 
       if (group->setup)
         group->setup();
 
-      int result = test->func();
+      int result = cbelt_run_test_in_sandbox(test->func, timeout_s);
 
       if (group->teardown)
         group->teardown();
 
-      if (result == 0) {
+      if (result == TEST_SUCCESS) {
         printf("  " CBELT_COLOR_GREEN "%s" CBELT_COLOR_RESET "\n", test->name);
         total_passed++;
       } else {
