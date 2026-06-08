@@ -30,6 +30,9 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
     - [Full Lifecycle Order](#full-lifecycle-order)
     - [Multiple Test Files](#multiple-test-files)
     - [What Happens on Failure](#what-happens-on-failure)
+  - [Configuration](#configuration)
+    - [Available Options](#available-options)
+    - [Usage](#usage)
   - [Compiler Support](#compiler-support)
   - [API Reference](#api-reference)
     - [Macros](#macros)
@@ -453,6 +456,42 @@ Example output with failures:
 ```
 
 The program exits with exit code **1** if **any** test fails for **any reason**, and **0** if all pass.
+
+### Configuration
+
+CBelt's output behavior can be customized using configuration macros. Define these **before** including `cbelt.h` or pass them as compiler flags with `-D`.
+
+#### Available Options
+
+| Macro | Effect |
+| --- | --- |
+| `CBELT_DISABLE_SPINNER` | Disables animated spinner entirely |
+| `CBELT_DISABLE_COLOR` | Disables ANSI colors, adds `PASSED`/`FAILED` suffixes |
+
+#### Usage
+
+**In your source file:**
+
+```c
+#define CBELT_DISABLE_SPINNER
+#define CBELT_DISABLE_COLOR
+#include "cbelt.h"
+```
+
+Or via compiler flags:
+
+```bash
+gcc -DCBELT_DISABLE_SPINNER -DCBELT_DISABLE_COLOR test_main.c tests.c -o tests
+```
+
+Or project-wide: Uncomment the corresponding lines at the top of `cbelt.h`:
+
+```c
+// #define CBELT_DISABLE_SPINNER
+// #define CBELT_DISABLE_COLOR
+```
+
+Both options work independently and can be combined. By default, both spinners and colors are enabled.
 
 ## Compiler Support
 
