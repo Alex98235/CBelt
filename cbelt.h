@@ -7,11 +7,23 @@
 #include <string.h>
 #ifdef __linux__
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/*---------------------------------------------------------------------------
+ * Spinner configuration
+ * Uncomment the line below to disable the animated spinner (useful for CI/CD)
+ *--------------------------------------------------------------------------*/
+// #define CBELT_DISABLE_SPINNER
+
 /*---------------------------------------------------------------------------
  * ANSI color codes for terminal output
  *--------------------------------------------------------------------------*/
@@ -21,6 +33,13 @@
 #define CBELT_COLOR_CYAN "\x1b[36m"
 #define CBELT_COLOR_BOLD "\x1b[1m"
 #define CBELT_COLOR_RESET "\x1b[0m"
+
+/*---------------------------------------------------------------------------
+ * Terminal control macros
+ *--------------------------------------------------------------------------*/
+#define CBELT_CLEAR_LINE "\r\x1b[2K"
+#define CBELT_SAVE_CURSOR "\x1b[s"
+#define CBELT_RESTORE_CURSOR "\x1b[u"
 
 /*---------------------------------------------------------------------------
  * Helper macros for unique names
@@ -237,6 +256,8 @@ teardown_func_t cbelt_global_teardown = NULL;
 const char *cbelt_current_group_name = NULL;
 char cbelt_error_buf[512];
 static int cbelt_global_default_timeout_s = CBELT_SANDBOX_DEFAULT_TIMEOUT_S;
+static pid_t spinner_pid = 0;
+static int spinner_pipe[2]; // For communication with spinner process
 
 /* Internal helpers */
 static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
@@ -421,7 +442,144 @@ TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
 #endif
 }
 
+static void cbelt_spinner_process(const char *test_name) {
+  const char *spinner_frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼",
+                                  "⠴", "⠦", "⠧", "⠇", "⠏"};
+  int num_frames = sizeof(spinner_frames) / sizeof(spinner_frames[0]);
+
+  srand(time(NULL));
+  int frame = rand();
+
+  char c;
+
+  close(spinner_pipe[1]);
+
+  // Make read end non-blocking
+  int flags = fcntl(spinner_pipe[0], F_GETFL, 0);
+  fcntl(spinner_pipe[0], F_SETFL, flags | O_NONBLOCK);
+
+  while (1) {
+    // Check if parent wants spinner to stop
+    if (read(spinner_pipe[0], &c, 1) > 0) {
+      break;
+    }
+
+    printf("\r%s %s...", spinner_frames[frame % num_frames], test_name);
+    fflush(stdout);
+    frame++;
+    usleep(80000);
+  }
+
+  // Clear the line completely before exiting
+  printf("\r\x1b[2K\r");
+  fflush(stdout);
+
+  close(spinner_pipe[0]);
+  exit(0);
+}
+
+static void cbelt_spinner_stop(void) {
+  if (spinner_pid != 0) {
+    char stop = 1;
+    write(spinner_pipe[1], &stop, 1);
+
+    // Wait for child to clean up and exit
+    int status;
+    waitpid(spinner_pid, &status, 0);
+
+    close(spinner_pipe[1]);
+    spinner_pid = 0;
+
+    printf(CBELT_CLEAR_LINE);
+    fflush(stdout);
+  }
+}
+
+// Start spinner in background process
+static void cbelt_spinner_start(const char *test_name) {
+#ifdef CBELT_DISABLE_SPINNER
+  // Spinner disabled - just print test name
+  printf("  %s...", test_name);
+  fflush(stdout);
+  return;
+#else
+#ifdef __linux__
+  // Linux implementation with fork/pipe
+  if (spinner_pid != 0) {
+    cbelt_spinner_stop();
+  }
+
+  if (pipe(spinner_pipe) == -1) {
+    printf("  %s...", test_name);
+    fflush(stdout);
+    return;
+  }
+
+  spinner_pid = fork();
+  if (spinner_pid == 0) {
+    cbelt_spinner_process(test_name);
+    exit(0);
+  } else if (spinner_pid < 0) {
+    close(spinner_pipe[0]);
+    close(spinner_pipe[1]);
+    printf("  %s...", test_name);
+    fflush(stdout);
+    return;
+  }
+
+  close(spinner_pipe[0]);
+#else
+  // Non-Linux fallback (Windows, etc.)
+  printf("  %s...", test_name);
+  fflush(stdout);
+#endif
+#endif
+}
+
+static void cbelt_spinner_update_result(const char *test_name,
+
+                                        TestResult result) {
+#ifdef CBELT_DISABLE_SPINNER
+  printf(CBELT_CLEAR_LINE);
+  fflush(stdout);
+#else
+#ifdef __linux__
+  if (spinner_pid != 0) {
+    cbelt_spinner_stop();
+  }
+#endif
+#endif
+
+  if (result == TEST_SUCCESS) {
+    printf("  " CBELT_COLOR_GREEN "%s" CBELT_COLOR_RESET "\n", test_name);
+  } else {
+    printf("  " CBELT_COLOR_RED "%s" CBELT_COLOR_RESET "\n", test_name);
+    if (cbelt_error_buf[0]) {
+      cbelt_print_indented(cbelt_error_buf);
+    }
+  }
+  fflush(stdout);
+}
+
+#ifdef _WIN32
+static void cbelt_enable_ansi(void) {
+  HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (stdout_handle != INVALID_HANDLE_VALUE) {
+    DWORD mode = 0;
+    if (GetConsoleMode(stdout_handle, &mode)) {
+      SetConsoleMode(stdout_handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+  }
+}
+#endif
+
 int cbelt_run_all_tests(void) {
+#ifndef CBELT_DISABLE_SPINNER
+#ifdef _WIN32
+  cbelt_enable_ansi();
+#endif
+#endif
+
   int total_passed = 0;
   int total_failed = 0;
   cbelt_group_t *group = cbelt_groups;
@@ -441,12 +599,14 @@ int cbelt_run_all_tests(void) {
     while (test) {
       // Reset error buffer and timeout for this test
       cbelt_error_buf[0] = '\0';
-      int timeout_s = cbelt_global_default_timeout_s;
 
-      // Override timeout with per-test timeout if set
+      // Determine timeout
+      int timeout_s = cbelt_global_default_timeout_s;
       if (test->timeout_s != 0) {
         timeout_s = test->timeout_s;
       }
+
+      cbelt_spinner_start(test->name);
 
       if (group->setup)
         group->setup();
@@ -456,15 +616,9 @@ int cbelt_run_all_tests(void) {
       if (group->teardown)
         group->teardown();
 
-      if (result == TEST_SUCCESS) {
-        printf("  " CBELT_COLOR_GREEN "%s" CBELT_COLOR_RESET "\n", test->name);
-        total_passed++;
-      } else {
-        printf("  " CBELT_COLOR_RED "%s" CBELT_COLOR_RESET "\n", test->name);
-        if (cbelt_error_buf[0])
-          cbelt_print_indented(cbelt_error_buf);
-        total_failed++;
-      }
+      cbelt_spinner_update_result(test->name, result);
+
+      result == TEST_SUCCESS ? total_passed++ : total_failed++;
 
       test = test->next;
     }
