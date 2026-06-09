@@ -15,8 +15,8 @@ static int test_teardown_called = 0;
  * Global setup / teardown
  *--------------------------------------------------------------------------*/
 CBELT_GLOBAL_SETUP() {
-  global_setup_called = 1;
-  cbelt_set_default_timeout(10);
+   global_setup_called = 1;
+   cbelt_set_default_timeout(10);
 }
 
 CBELT_GLOBAL_TEARDOWN() { global_teardown_called = 1; }
