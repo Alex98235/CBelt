@@ -1,0 +1,6 @@
+BasedOnStyle: LLVM
+IndentWidth: 3
+---
+Language: C
+ColumnLimit: 80
+PointerAlignment: Right
