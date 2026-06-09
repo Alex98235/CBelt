@@ -17,6 +17,11 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
   - [Defining Your Own Tests](#defining-your-own-tests)
     - [Basic Assertions](#basic-assertions)
     - [Test Return Value](#test-return-value)
+  - [Sandboxing and Timeouts](#sandboxing-and-timeouts)
+    - [How Sandboxing Works](#how-sandboxing-works)
+    - [Setting the Default Timeout](#setting-the-default-timeout)
+    - [Per-Test Timeouts](#per-test-timeouts)
+    - [Disabling Timeouts](#disabling-timeouts)
   - [Test Groups](#test-groups)
   - [Advanced Usage](#advanced-usage)
     - [Test-Level Setup and Teardown](#test-level-setup-and-teardown)
@@ -25,10 +30,14 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
     - [Full Lifecycle Order](#full-lifecycle-order)
     - [Multiple Test Files](#multiple-test-files)
     - [What Happens on Failure](#what-happens-on-failure)
+  - [Configuration](#configuration)
+    - [Available Options](#available-options)
+    - [Usage](#usage)
   - [Compiler Support](#compiler-support)
   - [API Reference](#api-reference)
     - [Macros](#macros)
     - [Functions](#functions)
+    - [Types](#types)
   - [Bug Reports and Feature Requests](#bug-reports-and-feature-requests)
   - [License](#license)
 
@@ -36,10 +45,15 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
 
 ## Features
 
-- **Single header**: drop `cbelt.h` into your project, no build system changes needed.
+- **Single header**: drop `cbelt.h` into your project and start testing!
 - **Automatic test registration**: `CBELT_TEST(name)` writes a constructor that registers itself before `main()` runs.
 - **Test groups**: organize tests into named groups with `CBELT_GROUP("name")`.
 - **Assertions**: `cbelt_assert(expr)` and `cbelt_assert_equal(expected, actual)` with automatic failure messages.
+- ***Linux-only-features***:
+  - **Sandboxed execution**: tests run in isolated child processes via `fork()` so that crashes and signals don't bring down the whole suite.
+  - **Timeouts**: configurable per-test and global timeouts; hung tests are detected and reported instead of hanging forever.
+  - **Crash / signal reporting**: tests that segfault or crash are reported with the signal name and number.
+  - **Error propagation across fork**: error messages from failed assertions in the child process are communicated back to the parent via a pipe.
 - **Setup / teardown hooks**: per-test, per-group, and global lifecycle functions.
 - **Colored output**: pass/fail results printed with ANSI colors in the terminal.
 - **`CBELT_MAIN` macro**: provides a ready-to-use `main()` so you don't have to write one.
@@ -108,19 +122,19 @@ CBELT_MAIN
 
 CBELT_TEST(addition_works) {
     cbelt_assert(2 + 2 == 4);
-    return 0;
+    return TEST_SUCCESS;
 }
 
 CBELT_TEST(subtraction_works) {
     cbelt_assert(5 - 3 == 2);
-    return 0;
+    return TEST_SUCCESS;
 }
 ```
 
 Every test function must:
 
-- Have the signature `int func(void)` (handled by the macro).
-- Return `0` on success or `1` on failure.
+- Have the signature `TestResult func(void)` (handled by the macro).
+- Return `TEST_SUCCESS` on success, `TEST_FAILURE` on failure, or `TEST_CRASH` if the test crashes.
 - Use `cbelt_assert()` to validate conditions.
 
 ### 3. Compile and run
@@ -159,28 +173,92 @@ CBELT_TEST(my_test) {
     cbelt_assert_equal(42, value);       // compares two integers
     cbelt_assert_equal(100L, 100L);      // works with long integers too
 
-    return 0;
+    return TEST_SUCCESS;
 }
 ```
 
 - `cbelt_assert(expr)` fails if `expr` is false. Prints the expression, file, and line number on failure.
 - `cbelt_assert_equal(expected, actual)` fails if `expected != actual`. Prints both values, the file, and the line number on failure.
 
-Both macros store the error message into an internal buffer and return `1` from the test function, which causes the framework to print a failure.
+Both macros store the error message into an internal buffer and return `TEST_FAILURE` (1) from the test function, which causes the framework to print a failure.
 
 ### Test Return Value
 
-A test **must return 0** to indicate success. If any `cbelt_assert` fails, execution continues but the test ultimately returns 1 (via the assertion macros). You can also return early manually:
+A test **must return `TEST_SUCCESS`** to indicate success. If any `cbelt_assert` fails, execution continues but the test ultimately returns `TEST_FAILURE` (via the assertion macros). You can also return early manually:
 
 ```c
 CBELT_TEST(early_exit_on_failure) {
     cbelt_assert(some_condition());
     if (!some_other_condition()) {
-        return 1;  // manual failure
+        return TEST_FAILURE;  // manual failure
     }
-    return 0;
+    return TEST_SUCCESS;
 }
 ```
+
+## Sandboxing and Timeouts
+
+On Linux, CBelt runs each test in an isolated child process via `fork()`. This means:
+
+- A test that **segfaults** or triggers any other fatal signal will be caught and reported as a crash, without taking down the entire test runner.
+- A test that **hangs** (e.g., infinite loop) will be killed after a configurable timeout.
+- Error messages from failed assertions in the child process are communicated back to the parent via a pipe and printed as normal.
+
+### How Sandboxing Works
+
+When `cbelt_run_test_in_sandbox()` is called:
+
+1. A pipe is created for error message communication.
+2. `fork()` creates a child process.
+3. The child runs the test function. If an assertion fails, the error message is written to the pipe and the child exits with the test result.
+4. The parent reads any error message from the pipe, then waits for the child to finish.
+5. If the child was killed by a signal (e.g., SIGSEGV, SIGABRT, SIGALRM), the signal is reported. If the signal was SIGALRM, the test is reported as a timeout.
+
+On non-Linux platforms, sandboxing is not available and tests run directly in-process.
+
+### Setting the Default Timeout
+
+The default timeout for all tests is **30 seconds**. You can change this in `CBELT_GLOBAL_SETUP()`:
+
+```c
+CBELT_GLOBAL_SETUP() {
+    cbelt_set_default_timeout(10);   // 10 second default timeout
+}
+```
+
+Pass a **positive number** to set the timeout in seconds.
+Pass a **negative number** to disable timeouts globally:
+
+```c
+cbelt_set_default_timeout(-1);   // no timeout by default
+```
+
+### Per-Test Timeouts
+
+Use `CBELT_TEST_TIMEOUT(name, timeout_s)` to set a specific timeout for an individual test:
+
+```c
+CBELT_TEST_TIMEOUT(slow_database_query, 60) {
+    // This test can take up to 60 seconds before being killed
+    cbelt_assert(query_database() == OK);
+    return TEST_SUCCESS;
+}
+```
+
+A timeout of **0** means "use the global default". A timeout of **-1** means "no timeout" for that specific test.
+
+### Disabling Timeouts
+
+Use `CBELT_TEST_NO_TIMEOUT(name)` for a test that should never be killed:
+
+```c
+CBELT_TEST_NO_TIMEOUT(hangs_until_input) {
+    // This test won't be timed out
+    return TEST_SUCCESS;
+}
+```
+
+This is equivalent to `CBELT_TEST_TIMEOUT(name, -1)`.
 
 ## Test Groups
 
@@ -191,19 +269,19 @@ CBELT_GROUP("math");
 
 CBELT_TEST(addition) {
     cbelt_assert(2 + 2 == 4);
-    return 0;
+    return TEST_SUCCESS;
 }
 
 CBELT_TEST(multiplication) {
     cbelt_assert(3 * 4 == 12);
-    return 0;
+    return TEST_SUCCESS;
 }
 
 CBELT_GROUP("strings");
 
 CBELT_TEST(length) {
     cbelt_assert(strlen("hello") == 5);
-    return 0;
+    return TEST_SUCCESS;
 }
 ```
 
@@ -245,13 +323,13 @@ CBELT_TEARDOWN() {
 CBELT_TEST(increment) {
     counter++;
     cbelt_assert(counter == 1);
-    return 0;
+    return TEST_SUCCESS;
 }
 
 CBELT_TEST(double_increment) {
     counter += 2;
     cbelt_assert(counter == 2);
-    return 0;
+    return TEST_SUCCESS;
 }
 ```
 
@@ -274,7 +352,7 @@ CBELT_GROUP_TEARDOWN() {
 
 CBELT_TEST(query) {
     cbelt_assert(db_connected);   // connection is already open
-    return 0;
+    return TEST_SUCCESS;
 }
 ```
 
@@ -284,8 +362,9 @@ CBELT_TEST(query) {
 
 ```c
 CBELT_GLOBAL_SETUP() {
-    // allocate global resources, seed random numbers, etc.
+    // allocate global resources, seed random numbers, set default timeout, etc.
     srand(42);
+    cbelt_set_default_timeout(10);
 }
 
 CBELT_GLOBAL_TEARDOWN() {
@@ -302,7 +381,7 @@ For each group, hooks execute in this order:
    1. `CBELT_GROUP_SETUP()` once per group.
    2. For each test in the group:
       - `CBELT_SETUP()` before the test.
-      - The test function itself.
+      - The test function itself (sandboxed on Linux).
       - `CBELT_TEARDOWN()` after the test.
    3. `CBELT_GROUP_TEARDOWN()` once per group.
 3. `CBELT_GLOBAL_TEARDOWN()` once after all groups.
@@ -325,6 +404,19 @@ Compile them all together:
 gcc -o run_tests tests/test_main.c tests/test_math.c tests/test_strings.c
 ```
 
+You can set a global default timeout for **all** your test files via `CBELT_GLOBAL_SETUP()` in **any** test file:
+
+```c
+// tests/test_math.c
+#include "../cbelt.h"
+
+CBELT_GLOBAL_SETUP() {
+    cbelt_set_default_timeout(5);  // 5 second timeout for all tests
+}
+```
+
+> **Note:** If multiple files define `CBELT_GLOBAL_SETUP()`, all of them will run. The order across translation units is not guaranteed.
+
 ### What Happens on Failure
 
 When an assertion fails, the framework:
@@ -333,7 +425,17 @@ When an assertion fails, the framework:
 2. Prints the test name in **red**.
 3. Prints an indented error message below it.
 
-Example output with a failure:
+When a test **crashes** (e.g., segfault, illegal instruction), the framework:
+
+1. Prints the test name in **red**.
+2. Prints the signal number and name (e.g., `Test crashed with signal: 11 (Segmentation fault)`).
+
+When a test **times out**, the framework:
+
+1. Prints the test name in **red**.
+2. Prints a message like `Test timed out after 10 seconds (infinite loop or hang)`.
+
+Example output with failures:
 
 ```text
 === (ungrouped) ===
@@ -341,21 +443,65 @@ Example output with a failure:
   failing_test
     Assertion failed: 1 == 0 at tests/test_suite.c:17
 
+=== crash_tests ===
+  will_segfault
+    Test crashed with signal: 11 (Segmentation fault)
+
+=== timeout_tests ===
+  infinite_loop
+    Test timed out after 5 seconds (infinite loop or hang)
+
 ================================
-1 passed, 1 failed
+1 passed, 2 failed
 ```
 
-The program exits with exit code **1** if any test fails, and **0** if all pass.
+The program exits with exit code **1** if **any** test fails for **any reason**, and **0** if all pass.
+
+### Configuration
+
+CBelt's output behavior can be customized using configuration macros. Define these **before** including `cbelt.h` or pass them as compiler flags with `-D`.
+
+#### Available Options
+
+| Macro | Effect |
+| --- | --- |
+| `CBELT_DISABLE_SPINNER` | Disables animated spinner entirely |
+| `CBELT_DISABLE_COLOR` | Disables ANSI colors, adds `PASSED`/`FAILED` suffixes |
+
+#### Usage
+
+**In your source file:**
+
+```c
+#define CBELT_DISABLE_SPINNER
+#define CBELT_DISABLE_COLOR
+#include "cbelt.h"
+```
+
+Or via compiler flags:
+
+```bash
+gcc -DCBELT_DISABLE_SPINNER -DCBELT_DISABLE_COLOR test_main.c tests.c -o tests
+```
+
+Or project-wide: Uncomment the corresponding lines at the top of `cbelt.h`:
+
+```c
+// #define CBELT_DISABLE_SPINNER
+// #define CBELT_DISABLE_COLOR
+```
+
+Both options work independently and can be combined. By default, both spinners and colors are enabled.
 
 ## Compiler Support
 
-| Compiler | Auto-registration | Notes |
-| --- | --- | --- |
-| GCC | ✅ | Uses `__attribute__((constructor))` |
-| Clang | ✅ | Same mechanism |
-| MSVC | ❌ | `CBELT_GROUP`, `CBELT_SETUP`, `CBELT_TEARDOWN` etc. become no-ops; tests must be manually registered |
+| Compiler | Auto-registration | Sandboxing | Notes |
+| --- | --- | --- | --- |
+| GCC | ✅ | ✅ (Linux) | Uses `__attribute__((constructor))` |
+| Clang | ✅ | ✅ (Linux) | Same mechanism |
+| MSVC | ❌ | ❌ | `CBELT_GROUP`, `CBELT_SETUP`, `CBELT_TEARDOWN` etc. become no-ops; tests must be manually registered |
 
-On compilers without constructor attribute support, the `CBELT_TEST` macro still works but you must manually call `cbelt_register_test()` to register each test. The `CBELT_GROUP` and lifecycle macros (`CBELT_SETUP`, `CBELT_TEARDOWN`, etc.) become no-ops.
+On compilers without constructor attribute support, the `CBELT_TEST` macro still works but you must manually call `cbelt_register_test()` to register each test. The `CBELT_GROUP` and lifecycle macros (`CBELT_SETUP`, `CBELT_TEARDOWN`, etc.) become no-ops. Sandboxing requires Linux and is only available with GCC/Clang.
 
 ## API Reference
 
@@ -366,6 +512,8 @@ On compilers without constructor attribute support, the `CBELT_TEST` macro still
 | `CBELT_MAIN` | Defines `main()` that calls `cbelt_run_all_tests()`. |
 | `CBELT_GROUP(name)` | Sets the active group name for subsequent tests. |
 | `CBELT_TEST(name)` | Defines a test function and automatically registers it. |
+| `CBELT_TEST_TIMEOUT(name, timeout_s)` | Defines a test with a specific timeout in seconds. 0 = use default, negative = no timeout. |
+| `CBELT_TEST_NO_TIMEOUT(name)` | Defines a test with no timeout (runs until completion). |
 | `CBELT_SETUP()` | Defines a per-test setup function for the current group. |
 | `CBELT_TEARDOWN()` | Defines a per-test teardown function for the current group. |
 | `CBELT_GROUP_SETUP()` | Defines a group-level setup function. |
@@ -381,10 +529,24 @@ On compilers without constructor attribute support, the `CBELT_TEST` macro still
 | --- | --- |
 | `int cbelt_run_all_tests(void)` | Runs all registered tests and returns 0 on success, 1 on failure. Called automatically by `CBELT_MAIN`. |
 | `void cbelt_register_test(...)` | Manually register a test (useful on compilers without constructor support). |
+| `void cbelt_register_test_with_timeout(...)` | Manually register a test with a specific timeout. |
+| `void cbelt_set_default_timeout(int seconds)` | Set the default timeout for all tests. Positive = seconds, negative = no timeout. Default is 30 seconds. |
+| `TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s)` | Run a single test function in a sandboxed child process with a timeout. Linux only. |
+
+### Types
+
+| Type | Values | Description |
+| --- | --- | --- |
+| `TestResult` | `TEST_SUCCESS` (0) | Test passed. |
+| | `TEST_FAILURE` (1) | Test failed (assertion failed or returned failure). |
+| | `TEST_CRASH` (2) | Test crashed or timed out. |
+| `test_func_t` | `TestResult (*test_func_t)(void)` | Signature for test functions. |
+| `setup_func_t` | `void (*setup_func_t)(void)` | Signature for setup functions. |
+| `teardown_func_t` | `void (*teardown_func_t)(void)` | Signature for teardown functions. |
 
 ## Bug Reports and Feature Requests
 
-If you find an issue or have an idea for an improvement, please open an issue on the [repository](https://codeberg.org/Spiffy2903/CBelt/issues).
+If you find an issue or have an idea for an improvement, please open an [issue](https://codeberg.org/Spiffy2903/CBelt/issues).
 
 ## License
 
