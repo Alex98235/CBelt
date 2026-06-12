@@ -1,13 +1,6 @@
 #ifndef CBELT_H
 #define CBELT_H
 
-#include <stdarg.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-
 /* Platform detection and includes */
 #if defined(__linux__)
 #define _POSIX_C_SOURCE 200809L
@@ -36,6 +29,13 @@
 #else
 #error "Unsupported platform, only Linux and Windows/MinGW are supported"
 #endif
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 /*---------------------------------------------------------------------------
  * Spinner configuration
