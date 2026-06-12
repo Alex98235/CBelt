@@ -167,10 +167,9 @@ CBELT_TEST(mem_equality) {
 }
 
 CBELT_TEST(mem_equality_intentional_failure) {
-   cbelt_auto a = (char *)malloc(64 * sizeof(char));
-   cbelt_auto b = (int *)malloc(64 * sizeof(int));
-
-   cbelt_assert_mem_equal(a, b, 64 * sizeof(char));
+   int data[4] = {1, 2, 3, 4};
+   int expected[4] = {1, 3, 3, 4};
+   cbelt_assert_mem_equal(expected, data, sizeof(data));
 
    return TEST_SUCCESS;
 }
