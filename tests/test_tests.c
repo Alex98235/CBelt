@@ -137,11 +137,10 @@ CBELT_TEST(logical_ops) {
 CBELT_GROUP("pointer_tests");
 
 CBELT_TEST(null_check) {
-   void *p = NULL;
+   cbelt_auto p = NULL;
    cbelt_assert_null(p);
    p = malloc(1);
    cbelt_assert_not_null(p);
-   free(p);
 
    return TEST_SUCCESS;
 }
@@ -160,28 +159,18 @@ CBELT_TEST(string_comparison) {
 }
 
 CBELT_TEST(mem_equality) {
-   char *a = (char *)malloc(64 * sizeof(char));
-   cbelt_assert_not_null(a);
-
-   void *b = a;
-   cbelt_assert_not_null(b);
-
-   cbelt_assert_mem_equal(a, b, 64 * sizeof(char));
-
-   free(a);
+   int data[4] = {1, 2, 3, 4};
+   int expected[4] = {1, 2, 3, 4};
+   cbelt_assert_mem_equal(expected, data, sizeof(data));
 
    return TEST_SUCCESS;
 }
 
 CBELT_TEST(mem_equality_intentional_failure) {
-   char *a = (char *)malloc(64 * sizeof(char));
-
-   void *b = (int *)malloc(64 * sizeof(int));
+   cbelt_auto a = (char *)malloc(64 * sizeof(char));
+   cbelt_auto b = (int *)malloc(64 * sizeof(int));
 
    cbelt_assert_mem_equal(a, b, 64 * sizeof(char));
-
-   free(a);
-   free(b);
 
    return TEST_SUCCESS;
 }
