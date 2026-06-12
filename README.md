@@ -69,7 +69,7 @@ CBelt uses **zero external dependencies** beyond the C standard library. To add 
 1. **Copy `cbelt.h`** into your source tree (or clone the repo):
 
    ```bash
-   git clone https://codeberg.org/Spiffy2903/CBelt.git
+   git clone https://github.com/Alex98235/CBelt.git
    ```
 
 2. **Include the header** in your test files:
