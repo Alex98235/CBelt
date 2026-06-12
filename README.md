@@ -636,7 +636,7 @@ On compilers without constructor attribute support, the `CBELT_TEST` macro still
 
 ## Bug Reports and Feature Requests
 
-If you find an issue or have an idea for an improvement, please open an [issue](https://codeberg.org/Spiffy2903/CBelt/issues).
+If you find an issue or have an idea for an improvement, please open an [issue](https://github.com/Alex98235/CBelt/issues).
 
 ## License
 
