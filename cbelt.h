@@ -37,9 +37,6 @@
 #error "Unsupported platform, only Linux and Windows/MinGW are supported"
 #endif
 
-/* Use the platform-appropriate string duplicator */
-#define cbelt_strdup CBELT_STRDUP
-
 /*---------------------------------------------------------------------------
  * Spinner configuration
  * Uncomment the line below to disable the animated spinner (useful for CI/CD)
@@ -77,6 +74,20 @@
 #define CBELT_CLEAR_LINE "\r\x1b[2K"
 #define CBELT_SAVE_CURSOR "\x1b[s"
 #define CBELT_RESTORE_CURSOR "\x1b[u"
+
+/* Use the platform-appropriate string duplicator */
+#define cbelt_strdup CBELT_STRDUP
+
+/* Safe snprintf wrapper.
+ * MSVC's _snprintf_s requires an extra count parameter; _TRUNCATE tells it
+ * to truncate rather than fail when the buffer is too small.
+ */
+#if defined(_WIN32)
+#define cbelt_snprintf_s(buf, bufsz, ...)                                      \
+   _snprintf_s(buf, bufsz, _TRUNCATE, __VA_ARGS__)
+#else
+#define cbelt_snprintf_s(buf, bufsz, ...) snprintf(buf, bufsz, __VA_ARGS__)
+#endif
 
 /*---------------------------------------------------------------------------
  * Helper macros for unique names
@@ -117,6 +128,48 @@ typedef struct cbelt_group {
  * Magic values
  *--------------------------------------------------------------------------*/
 #define CBELT_SANDBOX_DEFAULT_TIMEOUT_S 30
+
+/*---------------------------------------------------------------------------
+ * Resource management helpers (GCC/Clang only)
+ * Uses __attribute__((cleanup)). Zero runtime overhead, no setup/teardown
+ * required.
+ *--------------------------------------------------------------------------*/
+#if defined(__GNUC__) || defined(__clang__)
+
+static inline void cbelt_defer_free(void *p) { free(*(void **)p); }
+
+/* Automatically frees a malloc'd pointer when it goes out of scope.
+ * Usage:  cbelt_auto ptr = malloc(n);
+ * The compiler inserts free(ptr) at every scope exit point (normal return,
+ * assertion failure, goto).
+ */
+#define cbelt_auto __attribute__((cleanup(cbelt_defer_free))) void *
+
+/* Deferred cleanup block, runs an arbitrary function+arg on scope exit.
+ * Useful for non-malloc resources: close(fd), unlock(mutex), fclose(file).
+ *
+ * Usage:
+ *     int fd = open("file.txt", O_RDONLY);
+ *     cbelt_defer(close, (void *)(intptr_t)fd);
+ *
+ * The callback is invoked exactly once when the enclosing block exits,
+ * whether by normal return, assertion failure, or goto.
+ */
+typedef struct {
+   void (*fn)(void *);
+   void *arg;
+} cbelt_defer_block_t;
+
+static inline void cbelt_defer_run(cbelt_defer_block_t *b) {
+   if (b->fn)
+      b->fn(b->arg);
+}
+
+#define cbelt_defer(fn, arg)                                                   \
+   __attribute__((cleanup(cbelt_defer_run))) cbelt_defer_block_t CBELT_UNIQUE( \
+       _cbelt_def_) = {(fn), (arg)}
+
+#endif /* __GNUC__ || __clang__ */
 
 /*---------------------------------------------------------------------------
  * Public API declarations
@@ -340,8 +393,9 @@ extern char cbelt_error_buf[512];
 #define cbelt_assert(expr)                                                     \
    do {                                                                        \
       if (!(expr)) {                                                           \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Assertion failed: %s at %s:%d", #expr, __FILE__, __LINE__); \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Assertion failed: %s at %s:%d", #expr, __FILE__,    \
+                          __LINE__);                                           \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -359,27 +413,27 @@ extern char cbelt_error_buf[512];
       char *_cbelt_exp = NULL;                                                 \
       char *_cbelt_act = NULL;                                                 \
       if (!CBELT_TYPE_MATCH(expected, actual)) {                               \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Type mismatch at %s:%d\n%s (%s) vs %s (%s)", __FILE__,      \
-                  __LINE__, #expected, TYPENAME(expected), #actual,            \
-                  TYPENAME(actual));                                           \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Type mismatch at %s:%d\n%s (%s) vs %s (%s)",        \
+                          __FILE__, __LINE__, #expected, TYPENAME(expected),   \
+                          #actual, TYPENAME(actual));                          \
          return TEST_FAILURE;                                                  \
       }                                                                        \
       if (!GENERIC_EQ(expected, actual)) {                                     \
          if (cbelt_asprintf(&_cbelt_exp, CS_ANY(expected), expected) == -1 ||  \
              cbelt_asprintf(&_cbelt_act, CS_ANY(actual), actual) == -1) {      \
-            snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                 \
-                     "Internal error: failed to format "                       \
-                     "values");                                                \
+            cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),         \
+                             "Internal error: failed to format "               \
+                             "values");                                        \
             free(_cbelt_exp);                                                  \
             free(_cbelt_act);                                                  \
             return TEST_FAILURE;                                               \
          }                                                                     \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Equality assertion failed at %s:%d\n"                       \
-                  "  Expected: %s\n"                                           \
-                  "  Actual:   %s",                                            \
-                  __FILE__, __LINE__, _cbelt_exp, _cbelt_act);                 \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Equality assertion failed at %s:%d\n"               \
+                          "  Expected: %s\n"                                   \
+                          "  Actual:   %s",                                    \
+                          __FILE__, __LINE__, _cbelt_exp, _cbelt_act);         \
       }                                                                        \
       free(_cbelt_exp);                                                        \
       free(_cbelt_act);                                                        \
@@ -395,17 +449,17 @@ extern char cbelt_error_buf[512];
           GENERIC_EQ(expected, actual)) {                                      \
          if (cbelt_asprintf(&_cbelt_exp, CS_ANY(expected), expected) == -1 ||  \
              cbelt_asprintf(&_cbelt_act, CS_ANY(actual), actual) == -1) {      \
-            snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                 \
-                     "Internal error: failed to format values");               \
+            cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),         \
+                             "Internal error: failed to format values");       \
          }                                                                     \
          free(_cbelt_exp);                                                     \
          free(_cbelt_act);                                                     \
          return TEST_FAILURE;                                                  \
       }                                                                        \
-      snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                       \
-               "Inequality assertion failed at %s:%d\n"                        \
-               "  Unexpected value: %s",                                       \
-               __FILE__, __LINE__, _cbelt_exp);                                \
+      cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),               \
+                       "Inequality assertion failed at %s:%d\n"                \
+                       "  Unexpected value: %s",                               \
+                       __FILE__, __LINE__, _cbelt_exp);                        \
       free(_cbelt_exp);                                                        \
       free(_cbelt_act);                                                        \
    } while (0)
@@ -413,18 +467,18 @@ extern char cbelt_error_buf[512];
 #define cbelt_assert_str_not_equal(str1, str2)                                 \
    do {                                                                        \
       if (str1 == NULL && str2 == NULL) {                                      \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "String inequality failed: both NULL at %s:%d", __FILE__,    \
-                  __LINE__);                                                   \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String inequality failed: both NULL at %s:%d",      \
+                          __FILE__, __LINE__);                                 \
          return TEST_FAILURE;                                                  \
       }                                                                        \
       if (str1 == NULL || str2 == NULL) {                                      \
          break; /* One NULL, one not - definitely not equal */                 \
       }                                                                        \
       if (strcmp(str1, str2) == 0) {                                           \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "String inequality failed: %s == %s at %s:%d", #str1, #str2, \
-                  __FILE__, __LINE__);                                         \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String inequality failed: %s == %s at %s:%d",       \
+                          #str1, #str2, __FILE__, __LINE__);                   \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -435,17 +489,17 @@ extern char cbelt_error_buf[512];
          break; /* Both NULL - equal */                                        \
       }                                                                        \
       if (str1 == NULL || str2 == NULL) {                                      \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "String equality failed: NULL vs non-NULL at %s:%d",         \
-                  __FILE__, __LINE__);                                         \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String equality failed: NULL vs non-NULL at %s:%d", \
+                          __FILE__, __LINE__);                                 \
          return TEST_FAILURE;                                                  \
       }                                                                        \
       if (strcmp(str1, str2) != 0) {                                           \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "String equality failed: %s != %s at %s:%d\n"                \
-                  "  Expected: \"%s\"\n"                                       \
-                  "  Actual:   \"%s\"",                                        \
-                  #str1, #str2, __FILE__, __LINE__, str1, str2);               \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String equality failed: %s != %s at %s:%d\n"        \
+                          "  Expected: \"%s\"\n"                               \
+                          "  Actual:   \"%s\"",                                \
+                          #str1, #str2, __FILE__, __LINE__, str1, str2);       \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -453,9 +507,9 @@ extern char cbelt_error_buf[512];
 #define cbelt_assert_null(ptr)                                                 \
    do {                                                                        \
       if ((ptr) != NULL) {                                                     \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Expected NULL at %s:%d, got %p", __FILE__, __LINE__,        \
-                  (ptr));                                                      \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Expected NULL at %s:%d, got %p", __FILE__,          \
+                          __LINE__, (ptr));                                    \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -463,8 +517,8 @@ extern char cbelt_error_buf[512];
 #define cbelt_assert_not_null(ptr)                                             \
    do {                                                                        \
       if ((ptr) == NULL) {                                                     \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Expected non-NULL at %s:%d", __FILE__, __LINE__);           \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Expected non-NULL at %s:%d", __FILE__, __LINE__);   \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -475,15 +529,16 @@ extern char cbelt_error_buf[512];
          break; /* Success - both NULL */                                      \
       }                                                                        \
       if ((ptr1) == NULL || (ptr2) == NULL) {                                  \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Memory comparison failed: one pointer is NULL at %s:%d",    \
-                  __FILE__, __LINE__);                                         \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Memory comparison failed: one pointer is NULL at "  \
+                          "%s:%d",                                             \
+                          __FILE__, __LINE__);                                 \
          return TEST_FAILURE;                                                  \
       }                                                                        \
       if (memcmp((ptr1), (ptr2), (size)) != 0) {                               \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Memory mismatch at %s:%d (size: %zu bytes)", __FILE__,      \
-                  __LINE__, (size_t)(size));                                   \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Memory mismatch at %s:%d (size: %zu bytes)",        \
+                          __FILE__, __LINE__, (size_t)(size));                 \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -491,9 +546,9 @@ extern char cbelt_error_buf[512];
 #define cbelt_assert_in_range(value, min, max)                                 \
    do {                                                                        \
       if ((value) < (min) || (value) > (max)) {                                \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Value %s not in range [%s, %s] at %s:%d", #value, #min,     \
-                  #max, __FILE__, __LINE__);                                   \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Value %s not in range [%s, %s] at %s:%d", #value,   \
+                          #min, #max, __FILE__, __LINE__);                     \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -719,12 +774,14 @@ static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
    } else if (WIFSIGNALED(status)) {
       int sig = WTERMSIG(status);
       if (sig == SIGALRM) {
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),
-                  "Test timed out after %d seconds (infinite loop or hang)",
-                  timeout_s);
+         cbelt_snprintf_s(
+             cbelt_error_buf, sizeof(cbelt_error_buf),
+             "Test timed out after %d seconds (infinite loop or hang)",
+             timeout_s);
       } else {
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),
-                  "Test crashed with signal: %d (%s)", sig, strsignal(sig));
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),
+                          "Test crashed with signal: %d (%s)", sig,
+                          strsignal(sig));
       }
 
       return TEST_CRASH;
