@@ -1,6 +1,6 @@
 # CBelt: A Header-Only C Unit Testing Framework
 
-> The name is a stupid riff on *seatbelt* -> *CeatBelt* -> *CBelt*
+> The name is a stupid riff on _seatbelt_ -> _CeatBelt_ -> _CBelt_
 
 CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang constructor attributes to automatically register tests at load time, meaning no manual test registration, no test lists to maintain. Just write your tests and compile.
 
@@ -52,7 +52,7 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
 - **Automatic test registration**: `CBELT_TEST(name)` writes a constructor that registers itself before `main()` runs.
 - **Test groups**: organize tests into named groups with `CBELT_GROUP("name")`.
 - **Assertions**: `cbelt_assert(expr)` and `cbelt_assert_equal(expected, actual)` with automatic failure messages.
-- ***Linux (GCC/Clang) features***:
+- **_Linux (GCC/Clang) features_**:
   - **Sandboxed execution**: tests run in isolated child processes via `fork()` so that crashes and signals don't bring down the whole suite.
   - **Timeouts**: configurable per-test and global timeouts; hung tests are detected and reported instead of hanging forever.
   - **Crash / signal reporting**: tests that segfault or crash are reported with the signal name and number.
@@ -142,6 +142,8 @@ Every test function must:
 - Use `cbelt_assert()` to validate conditions.
 
 ### 3. Compile and run
+
+**Minimum C standard**: C11
 
 Compile all test `.c` files together with any source files you want to test, link nothing else:
 
@@ -477,10 +479,10 @@ CBelt's output behavior can be customized using configuration macros. Define the
 
 #### Available Options
 
-| Macro | Effect |
-| --- | --- |
-| `CBELT_DISABLE_SPINNER` | Disables animated spinner entirely |
-| `CBELT_DISABLE_COLOR` | Disables ANSI colors, adds `PASSED`/`FAILED` suffixes |
+| Macro                   | Effect                                                |
+| ----------------------- | ----------------------------------------------------- |
+| `CBELT_DISABLE_SPINNER` | Disables animated spinner entirely                    |
+| `CBELT_DISABLE_COLOR`   | Disables ANSI colors, adds `PASSED`/`FAILED` suffixes |
 
 #### Usage
 
@@ -509,7 +511,7 @@ Both options work independently and can be combined. By default, both spinners a
 
 ## Resource Management
 
-When an assertion fails, the framework calls `return TEST_FAILURE;` from inside the assertion macro, which means any cleanup code written *after* the assertion in the test is skipped. This can leak memory, file handles, or other resources.
+When an assertion fails, the framework calls `return TEST_FAILURE;` from inside the assertion macro, which means any cleanup code written _after_ the assertion in the test is skipped. This can leak memory, file handles, or other resources.
 
 CBelt provides two zero-overhead tools to solve this, using GCC/Clang's `__attribute__((cleanup))` extension:
 
@@ -568,11 +570,11 @@ The callback is guaranteed to run exactly once when the enclosing block exits, r
 
 ## CBelt Compiler Support
 
-| Compiler | Auto-registration | Sandboxing | Resource Management (`cbelt_auto` / `cbelt_defer`) | Notes |
-| --- | --- | --- | --- | --- |
-| GCC | ✅ | ✅ (Linux) | ✅ | Uses `__attribute__((constructor))` and `__attribute__((cleanup))` |
-| Clang | ✅ | ✅ (Linux) | ✅ | Same mechanisms |
-| MSVC | ❌ | ❌ | ❌ | `CBELT_GROUP`, `CBELT_SETUP`, `CBELT_TEARDOWN` etc. become no-ops; tests must be manually registered; `cbelt_auto` and `cbelt_defer` are no-ops |
+| Compiler | Auto-registration | Sandboxing | Resource Management (`cbelt_auto` / `cbelt_defer`) | Notes                                                                                                                                           |
+| -------- | ----------------- | ---------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| GCC      | ✅                | ✅ (Linux) | ✅                                                 | Uses `__attribute__((constructor))` and `__attribute__((cleanup))`                                                                              |
+| Clang    | ✅                | ✅ (Linux) | ✅                                                 | Same mechanisms                                                                                                                                 |
+| MSVC     | ❌                | ❌         | ❌                                                 | `CBELT_GROUP`, `CBELT_SETUP`, `CBELT_TEARDOWN` etc. become no-ops; tests must be manually registered; `cbelt_auto` and `cbelt_defer` are no-ops |
 
 On compilers without constructor attribute support, the `CBELT_TEST` macro still works but you must manually call `cbelt_register_test()` to register each test. The `CBELT_GROUP` and lifecycle macros (`CBELT_SETUP`, `CBELT_TEARDOWN`, etc.) become no-ops.
 
@@ -580,57 +582,57 @@ On compilers without constructor attribute support, the `CBELT_TEST` macro still
 
 ### Macros
 
-| Macro | Purpose |
-| --- | --- |
-| `CBELT_MAIN` | Defines `main()` that calls `cbelt_run_all_tests()`. |
-| `CBELT_GROUP(name)` | Sets the active group name for subsequent tests. |
-| `CBELT_TEST(name)` | Defines a test function and automatically registers it. |
-| `CBELT_TEST_TIMEOUT(name, timeout_s)` | Defines a test with a specific timeout in seconds. 0 = use default, negative = no timeout. |
-| `CBELT_TEST_NO_TIMEOUT(name)` | Defines a test with no timeout (runs until completion). |
-| `CBELT_SETUP()` | Defines a per-test setup function for the current group. |
-| `CBELT_TEARDOWN()` | Defines a per-test teardown function for the current group. |
-| `CBELT_GROUP_SETUP()` | Defines a group-level setup function. |
-| `CBELT_GROUP_TEARDOWN()` | Defines a group-level teardown function. |
-| `CBELT_GLOBAL_SETUP()` | Defines a global setup function (runs once before all tests). |
-| `CBELT_GLOBAL_TEARDOWN()` | Defines a global teardown function (runs once after all tests). |
-| `cbelt_auto` | Type annotation that auto-frees a heap-allocated pointer on scope exit using `__attribute__((cleanup))`. |
-| `cbelt_defer(fn, arg)` | Schedules a cleanup callback to run on scope exit. |
+| Macro                                 | Purpose                                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `CBELT_MAIN`                          | Defines `main()` that calls `cbelt_run_all_tests()`.                                                     |
+| `CBELT_GROUP(name)`                   | Sets the active group name for subsequent tests.                                                         |
+| `CBELT_TEST(name)`                    | Defines a test function and automatically registers it.                                                  |
+| `CBELT_TEST_TIMEOUT(name, timeout_s)` | Defines a test with a specific timeout in seconds. 0 = use default, negative = no timeout.               |
+| `CBELT_TEST_NO_TIMEOUT(name)`         | Defines a test with no timeout (runs until completion).                                                  |
+| `CBELT_SETUP()`                       | Defines a per-test setup function for the current group.                                                 |
+| `CBELT_TEARDOWN()`                    | Defines a per-test teardown function for the current group.                                              |
+| `CBELT_GROUP_SETUP()`                 | Defines a group-level setup function.                                                                    |
+| `CBELT_GROUP_TEARDOWN()`              | Defines a group-level teardown function.                                                                 |
+| `CBELT_GLOBAL_SETUP()`                | Defines a global setup function (runs once before all tests).                                            |
+| `CBELT_GLOBAL_TEARDOWN()`             | Defines a global teardown function (runs once after all tests).                                          |
+| `cbelt_auto`                          | Type annotation that auto-frees a heap-allocated pointer on scope exit using `__attribute__((cleanup))`. |
+| `cbelt_defer(fn, arg)`                | Schedules a cleanup callback to run on scope exit.                                                       |
 
 ### Assertions
 
-| Macro | Purpose |
-| --- | --- |
-| `cbelt_assert(expr)` | Assert that `expr` is truthy. Prints the expression, file, and line on failure. |
-| `cbelt_assert_true(expr)` | Alias for `cbelt_assert(expr)`. |
-| `cbelt_assert_false(expr)` | Assert that `expr` is falsy. |
-| `cbelt_assert_equal(expected, actual)` | Type-aware equality assertion. Compares values of any comparable type and prints both values on failure. |
-| `cbelt_assert_not_equal(expected, actual)` | Type-aware inequality assertion. Fails if `expected == actual`. |
-| `cbelt_assert_str_equal(str1, str2)` | String equality assertion using `strcmp()`. Handles NULL pointers. |
-| `cbelt_assert_str_not_equal(str1, str2)` | String inequality assertion using `strcmp()`. Handles NULL pointers. |
-| `cbelt_assert_null(ptr)` | Assert that a pointer is NULL. |
-| `cbelt_assert_not_null(ptr)` | Assert that a pointer is non-NULL. |
-| `cbelt_assert_mem_equal(ptr1, ptr2, size)` | Memory equality assertion using `memcmp()`. Handles NULL pointers. |
-| `cbelt_assert_in_range(value, min, max)` | Assert that `value` is within the inclusive range `[min, max]`. |
+| Macro                                      | Purpose                                                                                                  |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `cbelt_assert(expr)`                       | Assert that `expr` is truthy. Prints the expression, file, and line on failure.                          |
+| `cbelt_assert_true(expr)`                  | Alias for `cbelt_assert(expr)`.                                                                          |
+| `cbelt_assert_false(expr)`                 | Assert that `expr` is falsy.                                                                             |
+| `cbelt_assert_equal(expected, actual)`     | Type-aware equality assertion. Compares values of any comparable type and prints both values on failure. |
+| `cbelt_assert_not_equal(expected, actual)` | Type-aware inequality assertion. Fails if `expected == actual`.                                          |
+| `cbelt_assert_str_equal(str1, str2)`       | String equality assertion using `strcmp()`. Handles NULL pointers.                                       |
+| `cbelt_assert_str_not_equal(str1, str2)`   | String inequality assertion using `strcmp()`. Handles NULL pointers.                                     |
+| `cbelt_assert_null(ptr)`                   | Assert that a pointer is NULL.                                                                           |
+| `cbelt_assert_not_null(ptr)`               | Assert that a pointer is non-NULL.                                                                       |
+| `cbelt_assert_mem_equal(ptr1, ptr2, size)` | Memory equality assertion using `memcmp()`. Handles NULL pointers.                                       |
+| `cbelt_assert_in_range(value, min, max)`   | Assert that `value` is within the inclusive range `[min, max]`.                                          |
 
 ### Functions
 
-| Function | Purpose |
-| --- | --- |
-| `int cbelt_run_all_tests(void)` | Runs all registered tests and returns 0 on success, 1 on failure. Called automatically by `CBELT_MAIN`. |
-| `void cbelt_register_test(...)` | Manually register a test (useful on compilers without constructor support). |
-| `void cbelt_register_test_with_timeout(...)` | Manually register a test with a specific timeout. |
+| Function                                      | Purpose                                                                                                  |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `int cbelt_run_all_tests(void)`               | Runs all registered tests and returns 0 on success, 1 on failure. Called automatically by `CBELT_MAIN`.  |
+| `void cbelt_register_test(...)`               | Manually register a test (useful on compilers without constructor support).                              |
+| `void cbelt_register_test_with_timeout(...)`  | Manually register a test with a specific timeout.                                                        |
 | `void cbelt_set_default_timeout(int seconds)` | Set the default timeout for all tests. Positive = seconds, negative = no timeout. Default is 30 seconds. |
 
 ### Types
 
-| Type | Values | Description |
-| --- | --- | --- |
-| `TestResult` | `TEST_SUCCESS` (0) | Test passed. |
-| | `TEST_FAILURE` (1) | Test failed (assertion failed or returned failure). |
-| | `TEST_CRASH` (2) | Test crashed or timed out. |
-| `test_func_t` | `TestResult (*test_func_t)(void)` | Signature for test functions. |
-| `setup_func_t` | `void (*setup_func_t)(void)` | Signature for setup functions. |
-| `teardown_func_t` | `void (*teardown_func_t)(void)` | Signature for teardown functions. |
+| Type              | Values                            | Description                                         |
+| ----------------- | --------------------------------- | --------------------------------------------------- |
+| `TestResult`      | `TEST_SUCCESS` (0)                | Test passed.                                        |
+|                   | `TEST_FAILURE` (1)                | Test failed (assertion failed or returned failure). |
+|                   | `TEST_CRASH` (2)                  | Test crashed or timed out.                          |
+| `test_func_t`     | `TestResult (*test_func_t)(void)` | Signature for test functions.                       |
+| `setup_func_t`    | `void (*setup_func_t)(void)`      | Signature for setup functions.                      |
+| `teardown_func_t` | `void (*teardown_func_t)(void)`   | Signature for teardown functions.                   |
 
 ## Bug Reports and Feature Requests
 
