@@ -30,10 +30,13 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
     - [Full Lifecycle Order](#full-lifecycle-order)
     - [Multiple Test Files](#multiple-test-files)
     - [What Happens on Failure](#what-happens-on-failure)
+  - [Resource Management](#resource-management)
+    - [CBelt Auto](#cbelt_auto)
+    - [CBelt Defer](#cbelt_defer)
   - [Configuration](#configuration)
     - [Available Options](#available-options)
     - [Usage](#usage)
-  - [Compiler Support](#compiler-support)
+  - [CBelt Compiler Support](#cbelt-compiler-support)
   - [API Reference](#api-reference)
     - [Macros](#macros)
     - [Functions](#functions)
@@ -49,11 +52,12 @@ CBelt is a minimal, single-header C unit testing framework that uses GCC/Clang c
 - **Automatic test registration**: `CBELT_TEST(name)` writes a constructor that registers itself before `main()` runs.
 - **Test groups**: organize tests into named groups with `CBELT_GROUP("name")`.
 - **Assertions**: `cbelt_assert(expr)` and `cbelt_assert_equal(expected, actual)` with automatic failure messages.
-- ***Linux-only-features***:
+- ***Linux (GCC/Clang) features***:
   - **Sandboxed execution**: tests run in isolated child processes via `fork()` so that crashes and signals don't bring down the whole suite.
   - **Timeouts**: configurable per-test and global timeouts; hung tests are detected and reported instead of hanging forever.
   - **Crash / signal reporting**: tests that segfault or crash are reported with the signal name and number.
   - **Error propagation across fork**: error messages from failed assertions in the child process are communicated back to the parent via a pipe.
+  - `cbelt_auto` & `cbelt_defer` for memory management
 - **Setup / teardown hooks**: per-test, per-group, and global lifecycle functions.
 - **Colored output**: pass/fail results printed with ANSI colors in the terminal.
 - **`CBELT_MAIN` macro**: provides a ready-to-use `main()` so you don't have to write one.
@@ -493,15 +497,74 @@ Or project-wide: Uncomment the corresponding lines at the top of `cbelt.h`:
 
 Both options work independently and can be combined. By default, both spinners and colors are enabled.
 
-## Compiler Support
+## Resource Management
 
-| Compiler | Auto-registration | Sandboxing | Notes |
-| --- | --- | --- | --- |
-| GCC | ✅ | ✅ (Linux) | Uses `__attribute__((constructor))` |
-| Clang | ✅ | ✅ (Linux) | Same mechanism |
-| MSVC | ❌ | ❌ | `CBELT_GROUP`, `CBELT_SETUP`, `CBELT_TEARDOWN` etc. become no-ops; tests must be manually registered |
+When an assertion fails, the framework calls `return TEST_FAILURE;` from inside the assertion macro, which means any cleanup code written *after* the assertion in the test is skipped. This can leak memory, file handles, or other resources.
 
-On compilers without constructor attribute support, the `CBELT_TEST` macro still works but you must manually call `cbelt_register_test()` to register each test. The `CBELT_GROUP` and lifecycle macros (`CBELT_SETUP`, `CBELT_TEARDOWN`, etc.) become no-ops. Sandboxing requires Linux and is only available with GCC/Clang.
+CBelt provides two zero-overhead tools to solve this, using GCC/Clang's `__attribute__((cleanup))` extension:
+
+### `cbelt_auto`
+
+Declare a heap-allocated pointer with `cbelt_auto` instead of `void *`, and it is automatically freed when the enclosing scope exits, whether by normal return, assertion failure, `goto`, or any other path.
+
+```c
+CBELT_TEST(my_test) {
+   cbelt_auto buffer = malloc(4096);      // ← auto-freed on scope exit
+   cbelt_auto items  = calloc(10, sizeof(int)); // ← also auto-freed
+
+   cbelt_assert_not_null(buffer);
+   cbelt_assert_not_null(items);
+
+   cbelt_assert(buffer[0] == 0);          // If this fails → return → both freed automatically
+
+   // No manual free() needed
+   return TEST_SUCCESS;
+}
+```
+
+`cbelt_auto` is just a type annotation. It expands to `__attribute__((cleanup(cbelt_defer_free))) void *`. The compiler inserts the `free()` call at every scope exit point. There is **no runtime overhead** on the success path beyond the `free()` call itself.
+
+### `cbelt_defer`
+
+For non-malloc resources (file descriptors, mutexes, custom free functions), use `cbelt_defer(fn, arg)` to schedule an arbitrary cleanup callback:
+
+```c
+#include <stdio.h>
+
+CBELT_TEST(file_read) {
+   FILE *fp = fopen("data.txt", "r");
+   cbelt_assert_not_null(fp);
+   cbelt_defer(fclose, fp);   // ← fclose(fp) called on scope exit
+
+   char buf[256];
+   cbelt_assert(fgets(buf, sizeof(buf), fp) != NULL);
+   cbelt_assert(buf[0] != '\0');
+
+   // If either assertion above fails → return → fclose(fp) runs automatically
+   return TEST_SUCCESS;  // Normal exit → fclose(fp) also runs
+}
+```
+
+The callback is guaranteed to run exactly once when the enclosing block exits, regardless of how it exits.
+
+> **Note:** On Linux, the sandboxing (`fork()`) already reclaims all test process memory on exit, so `cbelt_auto` is technically redundant there. However, it is still recommended for:
+>
+> - Safety when `fork()` fails (the fallback path runs in-process)
+> - Valgrind/ASAN-clean test suites (tools trace allocations inside the child)
+> - Portable tests that may run on non-Linux targets
+> - Catching logic errors (e.g., double-free from manual `free()` + auto-cleanup)
+
+`cbelt_auto` and `cbelt_defer` use `__attribute__((cleanup))` and are only available on **GCC and Clang**. On MSVC and other compilers without this attribute, they are no-ops. The macros expand to a plain `void *` declaration and a no-op statement respectively, so your code will compile but will **not** automatically free resources on scope exit.
+
+## CBelt Compiler Support
+
+| Compiler | Auto-registration | Sandboxing | Resource Management (`cbelt_auto` / `cbelt_defer`) | Notes |
+| --- | --- | --- | --- | --- |
+| GCC | ✅ | ✅ (Linux) | ✅ | Uses `__attribute__((constructor))` and `__attribute__((cleanup))` |
+| Clang | ✅ | ✅ (Linux) | ✅ | Same mechanisms |
+| MSVC | ❌ | ❌ | ❌ | `CBELT_GROUP`, `CBELT_SETUP`, `CBELT_TEARDOWN` etc. become no-ops; tests must be manually registered; `cbelt_auto` and `cbelt_defer` are no-ops |
+
+On compilers without constructor attribute support, the `CBELT_TEST` macro still works but you must manually call `cbelt_register_test()` to register each test. The `CBELT_GROUP` and lifecycle macros (`CBELT_SETUP`, `CBELT_TEARDOWN`, etc.) become no-ops.
 
 ## API Reference
 

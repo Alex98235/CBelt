@@ -1,6 +1,7 @@
 #ifndef CBELT_H
 #define CBELT_H
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,9 +36,6 @@
 #else
 #error "Unsupported platform, only Linux and Windows/MinGW are supported"
 #endif
-
-/* Use the platform-appropriate string duplicator */
-#define cbelt_strdup CBELT_STRDUP
 
 /*---------------------------------------------------------------------------
  * Spinner configuration
@@ -76,6 +74,20 @@
 #define CBELT_CLEAR_LINE "\r\x1b[2K"
 #define CBELT_SAVE_CURSOR "\x1b[s"
 #define CBELT_RESTORE_CURSOR "\x1b[u"
+
+/* Use the platform-appropriate string duplicator */
+#define cbelt_strdup CBELT_STRDUP
+
+/* Safe snprintf wrapper.
+ * MSVC's _snprintf_s requires an extra count parameter; _TRUNCATE tells it
+ * to truncate rather than fail when the buffer is too small.
+ */
+#if defined(_WIN32)
+#define cbelt_snprintf_s(buf, bufsz, ...)                                      \
+   _snprintf_s(buf, bufsz, _TRUNCATE, __VA_ARGS__)
+#else
+#define cbelt_snprintf_s(buf, bufsz, ...) snprintf(buf, bufsz, __VA_ARGS__)
+#endif
 
 /*---------------------------------------------------------------------------
  * Helper macros for unique names
@@ -118,13 +130,63 @@ typedef struct cbelt_group {
 #define CBELT_SANDBOX_DEFAULT_TIMEOUT_S 30
 
 /*---------------------------------------------------------------------------
+ * Resource management helpers (GCC/Clang only)
+ * Uses __attribute__((cleanup)). Zero runtime overhead, no setup/teardown
+ * required.
+ *--------------------------------------------------------------------------*/
+#if defined(__GNUC__) || defined(__clang__)
+
+static inline void cbelt_defer_free(void *p) { free(*(void **)p); }
+
+/* Automatically frees a malloc'd pointer when it goes out of scope.
+ * Usage:  cbelt_auto ptr = malloc(n);
+ * The compiler inserts free(ptr) at every scope exit point (normal return,
+ * assertion failure, goto).
+ */
+#define cbelt_auto __attribute__((cleanup(cbelt_defer_free))) void *
+
+/* Deferred cleanup block, runs an arbitrary function+arg on scope exit.
+ * Useful for non-malloc resources: close(fd), unlock(mutex), fclose(file).
+ *
+ * Usage:
+ *     int fd = open("file.txt", O_RDONLY);
+ *     cbelt_defer(close, (void *)(intptr_t)fd);
+ *
+ * The callback is invoked exactly once when the enclosing block exits,
+ * whether by normal return, assertion failure, or goto.
+ */
+typedef struct {
+   void (*fn)(void *);
+   void *arg;
+} cbelt_defer_block_t;
+
+static inline void cbelt_defer_run(cbelt_defer_block_t *b) {
+   if (b->fn)
+      b->fn(b->arg);
+}
+
+#define cbelt_defer(fn, arg)                                                   \
+   __attribute__((cleanup(cbelt_defer_run))) cbelt_defer_block_t CBELT_UNIQUE( \
+       _cbelt_def_) = {(fn), (arg)}
+
+#endif /* __GNUC__ || __clang__ */
+
+/*---------------------------------------------------------------------------
  * Public API declarations
  *--------------------------------------------------------------------------*/
+
+// Windows does not have vasprintf & asprintf
+int cbelt_vasprintf(char **strp, const char *fmt, va_list ap);
+int cbelt_asprintf(char **strp, const char *fmt, ...);
+
+// Registration
 void cbelt_register_test(const char *group_name, const char *test_name,
                          test_func_t func);
 void cbelt_register_test_with_timeout(const char *group_name,
                                       const char *test_name, test_func_t func,
                                       int timeout);
+
+// Setup/Teardown
 void cbelt_set_group_setup(const char *group_name, setup_func_t func);
 void cbelt_set_group_teardown(const char *group_name, teardown_func_t func);
 void cbelt_set_test_setup(const char *group_name, setup_func_t func);
@@ -132,9 +194,10 @@ void cbelt_set_test_teardown(const char *group_name, teardown_func_t func);
 void cbelt_set_global_setup(setup_func_t func);
 void cbelt_set_global_teardown(teardown_func_t func);
 
+// Configuration
 void cbelt_set_default_timeout(int seconds);
 
-TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s);
+// Run
 int cbelt_run_all_tests(void);
 
 /* Each non-implementation translation unit gets its own file-scope
@@ -253,24 +316,239 @@ extern char cbelt_error_buf[512];
 #endif
 
 /*---------------------------------------------------------------------------
+ * Assertion helper macros
+ *--------------------------------------------------------------------------*/
+#define GENERIC_EQ(a, b) _Generic((a), default: ((a) == (b)))
+
+#define CS_ANY(x)                                                              \
+   _Generic((x),                                                               \
+       char: "%c",                                                             \
+       signed char: "%hhd",                                                    \
+       unsigned char: "%hhu",                                                  \
+       short: "%hd",                                                           \
+       unsigned short: "%hu",                                                  \
+       int: "%d",                                                              \
+       unsigned int: "%u",                                                     \
+       long: "%ld",                                                            \
+       unsigned long: "%lu",                                                   \
+       long long: "%lld",                                                      \
+       unsigned long long: "%llu",                                             \
+       float: "%g",                                                            \
+       double: "%g",                                                           \
+       long double: "%Lg",                                                     \
+       _Bool: "%d",                                                            \
+       char *: "\"%s\"",                                                       \
+       const char *: "\"%s\"",                                                 \
+       default: "%p")
+
+#define TYPENAME(x)                                                            \
+   _Generic((x),                                                               \
+       char: "char",                                                           \
+       signed char: "signed char",                                             \
+       unsigned char: "unsigned char",                                         \
+       short: "short",                                                         \
+       unsigned short: "unsigned short",                                       \
+       int: "int",                                                             \
+       unsigned int: "unsigned int",                                           \
+       long: "long",                                                           \
+       unsigned long: "unsigned long",                                         \
+       long long: "long long",                                                 \
+       unsigned long long: "unsigned long long",                               \
+       float: "float",                                                         \
+       double: "double",                                                       \
+       long double: "long double",                                             \
+       _Bool: "_Bool",                                                         \
+       char *: "char *",                                                       \
+       const char *: "const char",                                             \
+       void *: "void *",                                                       \
+       default: "unhandled type")
+
+#define TYPE_TAG(x)                                                            \
+   _Generic((x),                                                               \
+       char: 1,                                                                \
+       signed char: 2,                                                         \
+       unsigned char: 3,                                                       \
+       short: 4,                                                               \
+       unsigned short: 5,                                                      \
+       int: 6,                                                                 \
+       unsigned int: 7,                                                        \
+       long: 8,                                                                \
+       unsigned long: 9,                                                       \
+       long long: 10,                                                          \
+       unsigned long long: 11,                                                 \
+       float: 12,                                                              \
+       double: 13,                                                             \
+       long double: 14,                                                        \
+       _Bool: 15,                                                              \
+       char *: 16,                                                             \
+       const char *: 17,                                                       \
+       void *: 18,                                                             \
+       default: 0)
+
+#define CBELT_TYPE_MATCH(a, b) (TYPE_TAG(a) == TYPE_TAG(b))
+
+/*---------------------------------------------------------------------------
  * Assertions
  *--------------------------------------------------------------------------*/
 #define cbelt_assert(expr)                                                     \
    do {                                                                        \
       if (!(expr)) {                                                           \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Assertion failed: %s at %s:%d", #expr, __FILE__, __LINE__); \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Assertion failed: %s at %s:%d", #expr, __FILE__,    \
+                          __LINE__);                                           \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
 
+#define cbelt_assert_true(expr) cbelt_assert(expr)
+#define cbelt_assert_false(expr) cbelt_assert(!(expr))
+
+/*
+ * WARNING: cbelt_assert_equal evaluates 'expected' and 'actual' multiple
+ * times. Do not pass expressions with side effects (e.g.,
+ * func_with_side_effects()).
+ */
 #define cbelt_assert_equal(expected, actual)                                   \
    do {                                                                        \
-      if ((expected) != (actual)) {                                            \
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),                    \
-                  "Assertion failed: expected %lld, got %lld at %s:%d",        \
-                  (long long)(expected), (long long)(actual), __FILE__,        \
-                  __LINE__);                                                   \
+      char *_cbelt_exp = NULL;                                                 \
+      char *_cbelt_act = NULL;                                                 \
+      if (!CBELT_TYPE_MATCH(expected, actual)) {                               \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Type mismatch at %s:%d\n%s (%s) vs %s (%s)",        \
+                          __FILE__, __LINE__, #expected, TYPENAME(expected),   \
+                          #actual, TYPENAME(actual));                          \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+      if (!GENERIC_EQ(expected, actual)) {                                     \
+         if (cbelt_asprintf(&_cbelt_exp, CS_ANY(expected), expected) == -1 ||  \
+             cbelt_asprintf(&_cbelt_act, CS_ANY(actual), actual) == -1) {      \
+            cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),         \
+                             "Internal error: failed to format "               \
+                             "values");                                        \
+            free(_cbelt_exp);                                                  \
+            free(_cbelt_act);                                                  \
+            return TEST_FAILURE;                                               \
+         }                                                                     \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Equality assertion failed at %s:%d\n"               \
+                          "  Expected: %s\n"                                   \
+                          "  Actual:   %s",                                    \
+                          __FILE__, __LINE__, _cbelt_exp, _cbelt_act);         \
+      }                                                                        \
+      free(_cbelt_exp);                                                        \
+      free(_cbelt_act);                                                        \
+   }                                                                           \
+                                                                               \
+   while (0)
+
+#define cbelt_assert_not_equal(expected, actual)                               \
+   do {                                                                        \
+      char *_cbelt_exp = NULL;                                                 \
+      char *_cbelt_act = NULL;                                                 \
+      if (CBELT_TYPE_MATCH(expected, actual) &&                                \
+          GENERIC_EQ(expected, actual)) {                                      \
+         if (cbelt_asprintf(&_cbelt_exp, CS_ANY(expected), expected) == -1 ||  \
+             cbelt_asprintf(&_cbelt_act, CS_ANY(actual), actual) == -1) {      \
+            cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),         \
+                             "Internal error: failed to format values");       \
+         }                                                                     \
+         free(_cbelt_exp);                                                     \
+         free(_cbelt_act);                                                     \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+      cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),               \
+                       "Inequality assertion failed at %s:%d\n"                \
+                       "  Unexpected value: %s",                               \
+                       __FILE__, __LINE__, _cbelt_exp);                        \
+      free(_cbelt_exp);                                                        \
+      free(_cbelt_act);                                                        \
+   } while (0)
+
+#define cbelt_assert_str_not_equal(str1, str2)                                 \
+   do {                                                                        \
+      if (str1 == NULL && str2 == NULL) {                                      \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String inequality failed: both NULL at %s:%d",      \
+                          __FILE__, __LINE__);                                 \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+      if (str1 == NULL || str2 == NULL) {                                      \
+         break; /* One NULL, one not - definitely not equal */                 \
+      }                                                                        \
+      if (strcmp(str1, str2) == 0) {                                           \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String inequality failed: %s == %s at %s:%d",       \
+                          #str1, #str2, __FILE__, __LINE__);                   \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+   } while (0)
+
+#define cbelt_assert_str_equal(str1, str2)                                     \
+   do {                                                                        \
+      if (str1 == NULL && str2 == NULL) {                                      \
+         break; /* Both NULL - equal */                                        \
+      }                                                                        \
+      if (str1 == NULL || str2 == NULL) {                                      \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String equality failed: NULL vs non-NULL at %s:%d", \
+                          __FILE__, __LINE__);                                 \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+      if (strcmp(str1, str2) != 0) {                                           \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "String equality failed: %s != %s at %s:%d\n"        \
+                          "  Expected: \"%s\"\n"                               \
+                          "  Actual:   \"%s\"",                                \
+                          #str1, #str2, __FILE__, __LINE__, str1, str2);       \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+   } while (0)
+
+#define cbelt_assert_null(ptr)                                                 \
+   do {                                                                        \
+      if ((ptr) != NULL) {                                                     \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Expected NULL at %s:%d, got %p", __FILE__,          \
+                          __LINE__, (ptr));                                    \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+   } while (0)
+
+#define cbelt_assert_not_null(ptr)                                             \
+   do {                                                                        \
+      if ((ptr) == NULL) {                                                     \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Expected non-NULL at %s:%d", __FILE__, __LINE__);   \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+   } while (0)
+
+#define cbelt_assert_mem_equal(ptr1, ptr2, size)                               \
+   do {                                                                        \
+      if ((ptr1) == NULL && (ptr2) == NULL) {                                  \
+         break; /* Success - both NULL */                                      \
+      }                                                                        \
+      if ((ptr1) == NULL || (ptr2) == NULL) {                                  \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Memory comparison failed: one pointer is NULL at "  \
+                          "%s:%d",                                             \
+                          __FILE__, __LINE__);                                 \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+      if (memcmp((ptr1), (ptr2), (size)) != 0) {                               \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Memory mismatch at %s:%d (size: %zu bytes)",        \
+                          __FILE__, __LINE__, (size_t)(size));                 \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+   } while (0)
+
+#define cbelt_assert_in_range(value, min, max)                                 \
+   do {                                                                        \
+      if ((value) < (min) || (value) > (max)) {                                \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Value %s not in range [%s, %s] at %s:%d", #value,   \
+                          #min, #max, __FILE__, __LINE__);                     \
          return TEST_FAILURE;                                                  \
       }                                                                        \
    } while (0)
@@ -296,6 +574,39 @@ static int cbelt_global_default_timeout_s = CBELT_SANDBOX_DEFAULT_TIMEOUT_S;
 static pid_t spinner_pid = 0;
 static int spinner_pipe[2]; // For communication with spinner process
 #endif
+
+int cbelt_vasprintf(char **strp, const char *fmt, va_list ap) {
+   // First call to get required size
+   va_list ap_copy;
+   va_copy(ap_copy, ap);
+   int len = vsnprintf(NULL, 0, fmt, ap_copy);
+   va_end(ap_copy);
+
+   if (len < 0)
+      return -1;
+
+   char *buf = malloc(len + 1);
+   if (!buf)
+      return -1;
+
+   // Second call to actually format
+   int result = vsnprintf(buf, len + 1, fmt, ap);
+   if (result < 0) {
+      free(buf);
+      return -1;
+   }
+
+   *strp = buf;
+   return result;
+}
+
+int cbelt_asprintf(char **strp, const char *fmt, ...) {
+   va_list ap;
+   va_start(ap, fmt);
+   int result = cbelt_vasprintf(strp, fmt, ap);
+   va_end(ap);
+   return result;
+}
 
 /* Internal helpers */
 static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
@@ -398,7 +709,7 @@ void cbelt_set_default_timeout(int seconds) {
    }
 }
 
-TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
+static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
 #ifdef __linux__
    int pipefd[2];
    if (pipe(pipefd) == -1) {
@@ -463,12 +774,14 @@ TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
    } else if (WIFSIGNALED(status)) {
       int sig = WTERMSIG(status);
       if (sig == SIGALRM) {
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),
-                  "Test timed out after %d seconds (infinite loop or hang)",
-                  timeout_s);
+         cbelt_snprintf_s(
+             cbelt_error_buf, sizeof(cbelt_error_buf),
+             "Test timed out after %d seconds (infinite loop or hang)",
+             timeout_s);
       } else {
-         snprintf(cbelt_error_buf, sizeof(cbelt_error_buf),
-                  "Test crashed with signal: %d (%s)", sig, strsignal(sig));
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),
+                          "Test crashed with signal: %d (%s)", sig,
+                          strsignal(sig));
       }
 
       return TEST_CRASH;
