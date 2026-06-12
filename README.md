@@ -620,7 +620,6 @@ On compilers without constructor attribute support, the `CBELT_TEST` macro still
 | `void cbelt_register_test(...)` | Manually register a test (useful on compilers without constructor support). |
 | `void cbelt_register_test_with_timeout(...)` | Manually register a test with a specific timeout. |
 | `void cbelt_set_default_timeout(int seconds)` | Set the default timeout for all tests. Positive = seconds, negative = no timeout. Default is 30 seconds. |
-| `TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s)` | Run a single test function in a sandboxed child process with a timeout. Linux only. |
 
 ### Types
 
