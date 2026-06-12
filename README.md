@@ -177,14 +177,24 @@ CBELT_TEST(my_test) {
     cbelt_assert_equal(42, value);       // compares two integers
     cbelt_assert_equal(100L, 100L);      // works with long integers too
 
+    cbelt_auto str = cbelt_strdup("hello");
+    cbelt_assert_not_null(str);
+    cbelt_assert_str_equal("hello", str);
+
+    int *ptr = NULL;
+    cbelt_assert_null(ptr);
+
+    int data[4] = {1, 2, 3, 4};
+    int expected[4] = {1, 2, 3, 4};
+    cbelt_assert_mem_equal(expected, data, sizeof(data));
+
+    cbelt_assert_in_range(50, 0, 100);
+
     return TEST_SUCCESS;
 }
 ```
 
-- `cbelt_assert(expr)` fails if `expr` is false. Prints the expression, file, and line number on failure.
-- `cbelt_assert_equal(expected, actual)` fails if `expected != actual`. Prints both values, the file, and the line number on failure.
-
-Both macros store the error message into an internal buffer and return `TEST_FAILURE` (1) from the test function, which causes the framework to print a failure.
+All assertion macros store the error message into an internal buffer and return `TEST_FAILURE` (1) from the test function, which causes the framework to print a failure. See the [Assertions table](#assertions) in the API Reference for a complete list.
 
 ### Test Return Value
 
@@ -583,8 +593,24 @@ On compilers without constructor attribute support, the `CBELT_TEST` macro still
 | `CBELT_GROUP_TEARDOWN()` | Defines a group-level teardown function. |
 | `CBELT_GLOBAL_SETUP()` | Defines a global setup function (runs once before all tests). |
 | `CBELT_GLOBAL_TEARDOWN()` | Defines a global teardown function (runs once after all tests). |
-| `cbelt_assert(expr)` | Assert that `expr` is truthy. |
-| `cbelt_assert_equal(expected, actual)` | Assert that two integers are equal. |
+| `cbelt_auto` | Type annotation that auto-frees a heap-allocated pointer on scope exit using `__attribute__((cleanup))`. |
+| `cbelt_defer(fn, arg)` | Schedules a cleanup callback to run on scope exit. |
+
+### Assertions
+
+| Macro | Purpose |
+| --- | --- |
+| `cbelt_assert(expr)` | Assert that `expr` is truthy. Prints the expression, file, and line on failure. |
+| `cbelt_assert_true(expr)` | Alias for `cbelt_assert(expr)`. |
+| `cbelt_assert_false(expr)` | Assert that `expr` is falsy. |
+| `cbelt_assert_equal(expected, actual)` | Type-aware equality assertion. Compares values of any comparable type and prints both values on failure. |
+| `cbelt_assert_not_equal(expected, actual)` | Type-aware inequality assertion. Fails if `expected == actual`. |
+| `cbelt_assert_str_equal(str1, str2)` | String equality assertion using `strcmp()`. Handles NULL pointers. |
+| `cbelt_assert_str_not_equal(str1, str2)` | String inequality assertion using `strcmp()`. Handles NULL pointers. |
+| `cbelt_assert_null(ptr)` | Assert that a pointer is NULL. |
+| `cbelt_assert_not_null(ptr)` | Assert that a pointer is non-NULL. |
+| `cbelt_assert_mem_equal(ptr1, ptr2, size)` | Memory equality assertion using `memcmp()`. Handles NULL pointers. |
+| `cbelt_assert_in_range(value, min, max)` | Assert that `value` is within the inclusive range `[min, max]`. |
 
 ### Functions
 
