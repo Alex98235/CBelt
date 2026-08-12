@@ -403,6 +403,89 @@ extern char cbelt_error_buf[512];
 #define cbelt_assert_true(expr) cbelt_assert(expr)
 #define cbelt_assert_false(expr) cbelt_assert(!(expr))
 
+#ifdef __cplusplus
+
+/* C++ has no C11 _Generic, so cbelt_assert_equal / cbelt_assert_not_equal are
+ * reimplemented with templates. Values are evaluated once (auto&& capture),
+ * types are matched at compile time (std::is_same on decayed types), and
+ * values are formatted with std::ostringstream — operator<< covers the same
+ * categories CS_ANY handled (arithmetic, pointers, const char*, enums via
+ * integral promotion).
+ *
+ * Semantics match the C branch: a type mismatch is a failure; otherwise
+ * values are compared with == and both are printed on failure. */
+#include <sstream>
+#include <string>
+#include <type_traits>
+#include <typeinfo>
+
+namespace cbelt_cpp {
+
+template <typename T, typename U>
+inline bool types_match() {
+   return std::is_same<typename std::decay<T>::type,
+                       typename std::decay<U>::type>::value;
+}
+
+template <typename T>
+inline std::string format_value(const T &value) {
+   std::ostringstream os;
+   os << value;
+   return os.str();
+}
+
+template <typename T>
+inline const char *type_name() {
+   return typeid(T).name();
+}
+
+} // namespace cbelt_cpp
+
+#define cbelt_assert_equal(expected, actual)                                   \
+   do {                                                                        \
+      auto &&_cbelt_exp_ = (expected);                                         \
+      auto &&_cbelt_act_ = (actual);                                           \
+      if (!cbelt_cpp::types_match<decltype(_cbelt_exp_),                       \
+                                  decltype(_cbelt_act_)>()) {                  \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Type mismatch at %s:%d\n%s (%s) vs %s (%s)",        \
+                          __FILE__, __LINE__, #expected,                       \
+                          cbelt_cpp::type_name<decltype(_cbelt_exp_)>(),       \
+                          #actual,                                             \
+                          cbelt_cpp::type_name<decltype(_cbelt_act_)>());      \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+      if (!(_cbelt_exp_ == _cbelt_act_)) {                                     \
+         std::string _cbelt_es = cbelt_cpp::format_value(_cbelt_exp_);         \
+         std::string _cbelt_as = cbelt_cpp::format_value(_cbelt_act_);         \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Equality assertion failed at %s:%d\n"               \
+                          "  Expected: %s\n"                                   \
+                          "  Actual:   %s",                                    \
+                          __FILE__, __LINE__, _cbelt_es.c_str(),               \
+                          _cbelt_as.c_str());                                  \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+   } while (0)
+
+#define cbelt_assert_not_equal(expected, actual)                               \
+   do {                                                                        \
+      auto &&_cbelt_exp_ = (expected);                                         \
+      auto &&_cbelt_act_ = (actual);                                           \
+      if (cbelt_cpp::types_match<decltype(_cbelt_exp_),                        \
+                                 decltype(_cbelt_act_)>() &&                   \
+          (_cbelt_exp_ == _cbelt_act_)) {                                      \
+         std::string _cbelt_es = cbelt_cpp::format_value(_cbelt_exp_);         \
+         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
+                          "Inequality assertion failed at %s:%d\n"             \
+                          "  Unexpected value: %s",                            \
+                          __FILE__, __LINE__, _cbelt_es.c_str());              \
+         return TEST_FAILURE;                                                  \
+      }                                                                        \
+   } while (0)
+
+#else /* !__cplusplus */
+
 /*
  * WARNING: cbelt_assert_equal evaluates 'expected' and 'actual' multiple
  * times. Do not pass expressions with side effects (e.g.,
@@ -463,6 +546,8 @@ extern char cbelt_error_buf[512];
       free(_cbelt_exp);                                                        \
       free(_cbelt_act);                                                        \
    } while (0)
+
+#endif /* __cplusplus */
 
 #define cbelt_assert_str_not_equal(str1, str2)                                 \
    do {                                                                        \
@@ -585,7 +670,7 @@ int cbelt_vasprintf(char **strp, const char *fmt, va_list ap) {
    if (len < 0)
       return -1;
 
-   char *buf = malloc(len + 1);
+   char *buf = (char *)malloc(len + 1);
    if (!buf)
       return -1;
 
@@ -979,7 +1064,7 @@ int cbelt_run_all_tests(void) {
          if (group->setup)
             group->setup();
 
-         int result = cbelt_run_test_in_sandbox(test->func, timeout_s);
+         TestResult result = cbelt_run_test_in_sandbox(test->func, timeout_s);
 
          if (group->teardown)
             group->teardown();
