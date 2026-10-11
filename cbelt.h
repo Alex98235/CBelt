@@ -421,21 +421,18 @@ extern char cbelt_error_buf[512];
 
 namespace cbelt_cpp {
 
-template <typename T, typename U>
-inline bool types_match() {
+template <typename T, typename U> inline bool types_match() {
    return std::is_same<typename std::decay<T>::type,
                        typename std::decay<U>::type>::value;
 }
 
-template <typename T>
-inline std::string format_value(const T &value) {
+template <typename T> inline std::string format_value(const T &value) {
    std::ostringstream os;
    os << value;
    return os.str();
 }
 
-template <typename T>
-inline const char *type_name() {
+template <typename T> inline const char *type_name() {
    return typeid(T).name();
 }
 
@@ -447,12 +444,11 @@ inline const char *type_name() {
       auto &&_cbelt_act_ = (actual);                                           \
       if (!cbelt_cpp::types_match<decltype(_cbelt_exp_),                       \
                                   decltype(_cbelt_act_)>()) {                  \
-         cbelt_snprintf_s(cbelt_error_buf, sizeof(cbelt_error_buf),            \
-                          "Type mismatch at %s:%d\n%s (%s) vs %s (%s)",        \
-                          __FILE__, __LINE__, #expected,                       \
-                          cbelt_cpp::type_name<decltype(_cbelt_exp_)>(),       \
-                          #actual,                                             \
-                          cbelt_cpp::type_name<decltype(_cbelt_act_)>());      \
+         cbelt_snprintf_s(                                                     \
+             cbelt_error_buf, sizeof(cbelt_error_buf),                         \
+             "Type mismatch at %s:%d\n%s (%s) vs %s (%s)", __FILE__, __LINE__, \
+             #expected, cbelt_cpp::type_name<decltype(_cbelt_exp_)>(),         \
+             #actual, cbelt_cpp::type_name<decltype(_cbelt_act_)>());          \
          return TEST_FAILURE;                                                  \
       }                                                                        \
       if (!(_cbelt_exp_ == _cbelt_act_)) {                                     \
@@ -942,6 +938,7 @@ static void cbelt_spinner_stop(void) {
 // Start spinner in background process
 static void cbelt_spinner_start(const char *test_name) {
 #ifdef CBELT_DISABLE_SPINNER
+   (void)test_name;
    return;
 #else
 #ifdef __linux__
@@ -1014,6 +1011,7 @@ static void cbelt_spinner_update_result(const char *test_name,
 }
 
 #ifdef _WIN32
+#ifndef CBELT_DISABLE_SPINNER
 static void cbelt_enable_ansi(void) {
    HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
    if (stdout_handle != INVALID_HANDLE_VALUE) {
@@ -1024,6 +1022,7 @@ static void cbelt_enable_ansi(void) {
       }
    }
 }
+#endif
 #endif
 
 int cbelt_run_all_tests(void) {
