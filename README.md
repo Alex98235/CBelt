@@ -126,7 +126,7 @@ cbelt_assert_mem_equal(expected, data, sz);  // memcmp-based
 cbelt_assert_in_range(50, 0, 100);           // inclusive [min, max]
 ```
 
-All assertion macros print the expression, file, and line on failure, then return `TEST_FAILURE`.
+All assertion macros print the expression, file, and line on failure, then return `TEST_FAILURE`. Crashed or timed-out tests return `TEST_CRASH` (reported separately in the summary).
 
 ### Groups
 
@@ -170,7 +170,7 @@ When using `CBELT_MAIN` or calling `cbelt_run_all_tests_with_args(argc, argv)`:
 - **Serial (default)**: groups execute in registration order. Tests within a group run sequentially top-to-bottom.
 - **Parallel** (`--jobs N`, when N > 1): groups are distributed across N threads (chunked round-robin). Each group runs entirely within one thread. _**Tests within a group are still sequential**_.
 - **Filtering**: Groups with no matching tests are skipped entirely.
-- **Exit code**: 0 if all pass, 1 if any fail.
+- **Exit code**: 0 if all pass, 1 if any fail or crash.
 
 ## Sandboxing & Timeouts
 
