@@ -1206,12 +1206,14 @@ typedef struct {
    int group_count;
    int passed;
    int failed;
+   int crashed;
    cbelt_mutex_t *print_mutex;
 } cbelt_group_work_t;
 
 static void cbelt_run_group(cbelt_group_work_t *work) {
    int total_passed = 0;
    int total_failed = 0;
+   int total_crashed = 0;
    const cbelt_config_t *cfg = &cbelt_internal_config;
    const char *bold = cbelt_color(CBELT_COLOR_BOLD);
    const char *cyan = cbelt_color(CBELT_COLOR_CYAN);
@@ -1282,15 +1284,20 @@ static void cbelt_run_group(cbelt_group_work_t *work) {
          }
 
          cbelt_mutex_lock(work->print_mutex);
-         /* In quiet mode, defer header until first failure */
-         if (!header_printed && result == TEST_FAILURE) {
+         /* In quiet mode, defer header until first failure or crash */
+         if (!header_printed && result != TEST_SUCCESS) {
             printf("\n%s%s=== %s ===%s\n", bold, cyan, group->name, reset);
             header_printed = 1;
          }
          cbelt_spinner_update_result(test->name, result);
          cbelt_mutex_unlock(work->print_mutex);
 
-         result == TEST_SUCCESS ? total_passed++ : total_failed++;
+         if (result == TEST_SUCCESS)
+            total_passed++;
+         else if (result == TEST_CRASH)
+            total_crashed++;
+         else
+            total_failed++;
 
          test = test->next;
       }
@@ -1301,6 +1308,7 @@ static void cbelt_run_group(cbelt_group_work_t *work) {
 
    work->passed = total_passed;
    work->failed = total_failed;
+   work->crashed = total_crashed;
 }
 
 /* Thread wrapper functions */
@@ -1436,6 +1444,7 @@ int cbelt_run_all_tests_with_args(int argc, char **argv) {
 int cbelt_run_tests(void) {
    int total_passed = 0;
    int total_failed = 0;
+   int total_crashed = 0;
 
    if (cbelt_global_setup)
       cbelt_global_setup();
@@ -1506,6 +1515,7 @@ int cbelt_run_tests(void) {
          cbelt_thread_join(threads[ti]);
          total_passed += works[ti].passed;
          total_failed += works[ti].failed;
+         total_crashed += works[ti].crashed;
       }
 
       free(group_array);
@@ -1539,6 +1549,7 @@ int cbelt_run_tests(void) {
       cbelt_run_group(&work);
       total_passed += work.passed;
       total_failed += work.failed;
+      total_crashed += work.crashed;
       free(group_array);
       cbelt_mutex_destroy(&serial_mutex);
    }
@@ -1552,10 +1563,15 @@ int cbelt_run_tests(void) {
    const char *reset = cbelt_color(CBELT_COLOR_RESET);
 
    printf("\n%s================================%s\n", bold, reset);
-   printf("%s%d passed%s, %s%d failed%s\n", green, total_passed, reset, red,
-          total_failed, reset);
+   if (total_crashed > 0)
+      printf("%s%d passed%s, %s%d failed%s, %s%d crashed%s\n",
+             green, total_passed, reset, red, total_failed, reset,
+             red, total_crashed, reset);
+   else
+      printf("%s%d passed%s, %s%d failed%s\n", green, total_passed, reset, red,
+             total_failed, reset);
 
-   return total_failed > 0 ? 1 : 0;
+   return total_failed > 0 || total_crashed > 0 ? 1 : 0;
 }
 
 /* Backward-compatible wrapper */
