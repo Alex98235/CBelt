@@ -14,6 +14,7 @@
 #define CBELT_STRDUP strdup
 
 #elif defined(_WIN32)
+#include <io.h> /* _dup, _dup2, _close, _fileno */
 #include <windows.h>
 
 /* MSVC uses underscore prefix for these functions */
@@ -38,35 +39,14 @@
 #include <time.h>
 
 /*---------------------------------------------------------------------------
- * Spinner configuration
- * Uncomment the line below to disable the animated spinner (useful for CI/CD)
- *--------------------------------------------------------------------------*/
-// #define CBELT_DISABLE_SPINNER
-
-/*---------------------------------------------------------------------------
- * Color configuration
- * Uncomment the line below to disable colored output
- *--------------------------------------------------------------------------*/
-// #define CBELT_DISABLE_COLOR
-
-/*---------------------------------------------------------------------------
  * ANSI color codes for terminal output
  *--------------------------------------------------------------------------*/
-#ifndef CBELT_DISABLE_COLOR
 #define CBELT_COLOR_RED "\x1b[31m"
 #define CBELT_COLOR_GREEN "\x1b[32m"
 #define CBELT_COLOR_YELLOW "\x1b[33m"
 #define CBELT_COLOR_CYAN "\x1b[36m"
 #define CBELT_COLOR_BOLD "\x1b[1m"
 #define CBELT_COLOR_RESET "\x1b[0m"
-#else
-#define CBELT_COLOR_RED ""
-#define CBELT_COLOR_GREEN ""
-#define CBELT_COLOR_YELLOW ""
-#define CBELT_COLOR_CYAN ""
-#define CBELT_COLOR_BOLD ""
-#define CBELT_COLOR_RESET ""
-#endif
 
 /*---------------------------------------------------------------------------
  * Terminal control macros
@@ -87,6 +67,19 @@
    _snprintf_s(buf, bufsz, _TRUNCATE, __VA_ARGS__)
 #else
 #define cbelt_snprintf_s(buf, bufsz, ...) snprintf(buf, bufsz, __VA_ARGS__)
+#endif
+
+/*---------------------------------------------------------------------------
+ * Diagnostic pragma helpers
+ *--------------------------------------------------------------------------*/
+#if defined(__GNUC__) || defined(__clang__)
+#define CBELT_DIAG_PUSH _Pragma("GCC diagnostic push")
+#define CBELT_DIAG_POP _Pragma("GCC diagnostic pop")
+#define CBELT_IGNORE_PEDANTIC _Pragma("GCC diagnostic ignored \"-Wpedantic\"")
+#else
+#define CBELT_DIAG_PUSH
+#define CBELT_DIAG_POP
+#define CBELT_IGNORE_PEDANTIC
 #endif
 
 /*---------------------------------------------------------------------------
@@ -120,6 +113,7 @@ typedef struct cbelt_group {
    setup_func_t group_setup;
    teardown_func_t group_teardown;
    struct cbelt_test *tests;
+   struct cbelt_test *tests_tail;
    struct cbelt_group *next;
    size_t test_count;
 } cbelt_group_t;
@@ -198,7 +192,15 @@ void cbelt_set_global_teardown(teardown_func_t func);
 void cbelt_set_default_timeout(int seconds);
 
 // Run
+void cbelt_parse_args(int argc, char **argv);
+int cbelt_run_tests(void);
 int cbelt_run_all_tests(void);
+int cbelt_run_all_tests_with_args(int argc, char **argv);
+
+// Output redirect (capture stdout for self-tests)
+void cbelt_set_output(char *buf, size_t size);
+void cbelt_set_output_file(FILE *f);
+void cbelt_reset_output(void);
 
 /* Each non-implementation translation unit gets its own file-scope
    cbelt_current_group_name so that constructors in one .c file never
@@ -206,7 +208,7 @@ int cbelt_run_all_tests(void);
    a genuine global (defined below). */
 #ifndef CBELT_IMPLEMENTATION
 static const char *cbelt_current_group_name = NULL;
-extern char cbelt_error_buf[512];
+extern _Thread_local char cbelt_error_buf[512];
 #endif
 
 /*---------------------------------------------------------------------------
@@ -220,15 +222,19 @@ extern char cbelt_error_buf[512];
    order within a translation unit.
    Base 200 avoids the reserved 0-100 range. */
 #define CBELT_GROUP(name)                                                      \
-   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(   \
-       _cbelt_set_group_)(void) {                                              \
+   CBELT_DIAG_PUSH CBELT_IGNORE_PEDANTIC static void                           \
+       __attribute__((constructor(200 + __COUNTER__)))                         \
+       CBELT_UNIQUE(_cbelt_set_group_)(void) {                                 \
+      CBELT_DIAG_POP                                                           \
       cbelt_current_group_name = name;                                         \
    }
 
 #define CBELT_TEST(name)                                                       \
    static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void);                   \
-   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(   \
-       _cbelt_register_##name)(void) {                                         \
+   CBELT_DIAG_PUSH CBELT_IGNORE_PEDANTIC static void                           \
+       __attribute__((constructor(200 + __COUNTER__)))                         \
+       CBELT_UNIQUE(_cbelt_register_##name)(void) {                            \
+      CBELT_DIAG_POP                                                           \
       cbelt_register_test(cbelt_current_group_name, #name,                     \
                           CBELT_UNIQUE(_cbelt_test_##name));                   \
    }                                                                           \
@@ -236,8 +242,10 @@ extern char cbelt_error_buf[512];
 
 #define CBELT_TEST_TIMEOUT(name, timeout_s)                                    \
    static TestResult CBELT_UNIQUE(_cbelt_test_##name)(void);                   \
-   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(   \
-       _cbelt_register_##name)(void) {                                         \
+   CBELT_DIAG_PUSH CBELT_IGNORE_PEDANTIC static void                           \
+       __attribute__((constructor(200 + __COUNTER__)))                         \
+       CBELT_UNIQUE(_cbelt_register_##name)(void) {                            \
+      CBELT_DIAG_POP                                                           \
       cbelt_register_test_with_timeout(cbelt_current_group_name, #name,        \
                                        CBELT_UNIQUE(_cbelt_test_##name),       \
                                        timeout_s);                             \
@@ -248,8 +256,10 @@ extern char cbelt_error_buf[512];
 
 #define CBELT_GROUP_SETUP()                                                    \
    static void CBELT_UNIQUE(_cbelt_group_setup)(void);                         \
-   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(   \
-       _cbelt_register_group_setup)(void) {                                    \
+   CBELT_DIAG_PUSH CBELT_IGNORE_PEDANTIC static void                           \
+       __attribute__((constructor(200 + __COUNTER__)))                         \
+       CBELT_UNIQUE(_cbelt_register_group_setup)(void) {                       \
+      CBELT_DIAG_POP                                                           \
       cbelt_set_group_setup(cbelt_current_group_name,                          \
                             CBELT_UNIQUE(_cbelt_group_setup));                 \
    }                                                                           \
@@ -257,8 +267,10 @@ extern char cbelt_error_buf[512];
 
 #define CBELT_GROUP_TEARDOWN()                                                 \
    static void CBELT_UNIQUE(_cbelt_group_teardown)(void);                      \
-   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(   \
-       _cbelt_register_group_teardown)(void) {                                 \
+   CBELT_DIAG_PUSH CBELT_IGNORE_PEDANTIC static void                           \
+       __attribute__((constructor(200 + __COUNTER__)))                         \
+       CBELT_UNIQUE(_cbelt_register_group_teardown)(void) {                    \
+      CBELT_DIAG_POP                                                           \
       cbelt_set_group_teardown(cbelt_current_group_name,                       \
                                CBELT_UNIQUE(_cbelt_group_teardown));           \
    }                                                                           \
@@ -266,8 +278,10 @@ extern char cbelt_error_buf[512];
 
 #define CBELT_SETUP()                                                          \
    static void CBELT_UNIQUE(_cbelt_setup)(void);                               \
-   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(   \
-       _cbelt_register_setup)(void) {                                          \
+   CBELT_DIAG_PUSH CBELT_IGNORE_PEDANTIC static void                           \
+       __attribute__((constructor(200 + __COUNTER__)))                         \
+       CBELT_UNIQUE(_cbelt_register_setup)(void) {                             \
+      CBELT_DIAG_POP                                                           \
       cbelt_set_test_setup(cbelt_current_group_name,                           \
                            CBELT_UNIQUE(_cbelt_setup));                        \
    }                                                                           \
@@ -275,8 +289,10 @@ extern char cbelt_error_buf[512];
 
 #define CBELT_TEARDOWN()                                                       \
    static void CBELT_UNIQUE(_cbelt_teardown)(void);                            \
-   static void __attribute__((constructor(200 + __COUNTER__))) CBELT_UNIQUE(   \
-       _cbelt_register_teardown)(void) {                                       \
+   CBELT_DIAG_PUSH CBELT_IGNORE_PEDANTIC static void                           \
+       __attribute__((constructor(200 + __COUNTER__)))                         \
+       CBELT_UNIQUE(_cbelt_register_teardown)(void) {                          \
+      CBELT_DIAG_POP                                                           \
       cbelt_set_test_teardown(cbelt_current_group_name,                        \
                               CBELT_UNIQUE(_cbelt_teardown));                  \
    }                                                                           \
@@ -634,30 +650,99 @@ template <typename T> inline const char *type_name() {
       }                                                                        \
    } while (0)
 
-/* Convenience main macro */
+/* Convenience main macro - takes argc, argv for CLI options */
 #define CBELT_MAIN                                                             \
-   int main(void) { return cbelt_run_all_tests(); }
+   int main(int argc, char **argv) {                                           \
+      return cbelt_run_all_tests_with_args(argc, argv);                        \
+   }
 
 /*---------------------------------------------------------------------------
  * Implementation (define CBELT_IMPLEMENTATION in exactly one .c file)
  *--------------------------------------------------------------------------*/
 #ifdef CBELT_IMPLEMENTATION
 
-/* Internal globals */
+/*---------------------------------------------------------------------------
+ * Thread abstraction layer
+ *--------------------------------------------------------------------------*/
+#if defined(__linux__)
+#include <pthread.h>
+typedef pthread_t cbelt_thread_t;
+typedef pthread_mutex_t cbelt_mutex_t;
+#define cbelt_mutex_init(m) pthread_mutex_init(m, NULL)
+#define cbelt_mutex_destroy(m) pthread_mutex_destroy(m)
+#define cbelt_mutex_lock(m) pthread_mutex_lock(m)
+#define cbelt_mutex_unlock(m) pthread_mutex_unlock(m)
+#define cbelt_thread_create(t, f, a) pthread_create(t, NULL, f, a)
+#define cbelt_thread_join(t) pthread_join(t, NULL)
+#elif defined(_WIN32)
+typedef HANDLE cbelt_thread_t;
+typedef CRITICAL_SECTION cbelt_mutex_t;
+#define cbelt_mutex_init(m) InitializeCriticalSection(m)
+#define cbelt_mutex_destroy(m) DeleteCriticalSection(m)
+#define cbelt_mutex_lock(m) EnterCriticalSection(m)
+#define cbelt_mutex_unlock(m) LeaveCriticalSection(m)
+#define cbelt_thread_create(t, f, a)                                           \
+   ((*(t) = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(f), (a), 0,         \
+                         NULL)) != NULL                                        \
+        ? 0                                                                    \
+        : -1)
+#define cbelt_thread_join(t)                                                   \
+   (WaitForSingleObject((t), INFINITE), CloseHandle((t)))
+#else
+#define CBELT_NO_THREADING
+#endif
+
+/*---------------------------------------------------------------------------
+ * Runtime configuration struct
+ *--------------------------------------------------------------------------*/
+typedef struct cbelt_config {
+   int quiet;   /* 1 = only show failures and summary */
+   int spinner; /* 0 = no spinner, 1 = spinner */
+   int color;   /* 0 = never, 1 = auto (isatty), 2 = always */
+   int jobs;    /* number of parallel threads (1 = serial) */
+   const char
+       *filter; /* NULL or prefix/glob pattern matching "group.test_name" */
+} cbelt_config_t;
+
+/*---------------------------------------------------------------------------
+ * Platform-specific includes for output redirect
+ *--------------------------------------------------------------------------*/
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+
+#endif
+
+/*---------------------------------------------------------------------------
+ * Internal config and stdout redirect state
+ *--------------------------------------------------------------------------*/
+static struct cbelt_config cbelt_internal_config = {0, 1, 1, 1, NULL};
+static int cbelt_saved_stdout_fd = -1;
+static int cbelt_capture_pipe_read = -1;
+static int cbelt_capture_pipe_write = -1;
+static char *cbelt_capture_buf = NULL;
+static size_t cbelt_capture_buf_size = 0;
+static int cbelt_redirect_active = 0;
+
+/*---------------------------------------------------------------------------
+ * Internal globals
+ *--------------------------------------------------------------------------*/
 cbelt_group_t *cbelt_groups = NULL;
 cbelt_group_t *cbelt_groups_tail = NULL;
 setup_func_t cbelt_global_setup = NULL;
 teardown_func_t cbelt_global_teardown = NULL;
 const char *cbelt_current_group_name = NULL;
-char cbelt_error_buf[512];
+_Thread_local char cbelt_error_buf[512];
 static int cbelt_global_default_timeout_s = CBELT_SANDBOX_DEFAULT_TIMEOUT_S;
 #ifndef _WIN32
 static pid_t spinner_pid = 0;
-static int spinner_pipe[2]; // For communication with spinner process
+static int spinner_pipe[2];
 #endif
 
+/*---------------------------------------------------------------------------
+ * vasprintf / asprintf helpers
+ *--------------------------------------------------------------------------*/
 int cbelt_vasprintf(char **strp, const char *fmt, va_list ap) {
-   // First call to get required size
    va_list ap_copy;
    va_copy(ap_copy, ap);
    int len = vsnprintf(NULL, 0, fmt, ap_copy);
@@ -670,7 +755,6 @@ int cbelt_vasprintf(char **strp, const char *fmt, va_list ap) {
    if (!buf)
       return -1;
 
-   // Second call to actually format
    int result = vsnprintf(buf, len + 1, fmt, ap);
    if (result < 0) {
       free(buf);
@@ -689,7 +773,9 @@ int cbelt_asprintf(char **strp, const char *fmt, ...) {
    return result;
 }
 
-/* Internal helpers */
+/*---------------------------------------------------------------------------
+ * Group / test helpers
+ *--------------------------------------------------------------------------*/
 static cbelt_group_t *cbelt_find_or_create_group(const char *name) {
    cbelt_group_t *g = cbelt_groups;
    while (g) {
@@ -715,9 +801,14 @@ static void cbelt_add_test(cbelt_group_t *group, const char *name,
    cbelt_test_t *test = (cbelt_test_t *)calloc(1, sizeof(cbelt_test_t));
    test->name = cbelt_strdup(name);
    test->func = func;
-   test->next = group->tests;
    test->timeout_s = timeout_s;
-   group->tests = test;
+   test->next = NULL;
+   if (group->tests_tail) {
+      group->tests_tail->next = test;
+   } else {
+      group->tests = test;
+   }
+   group->tests_tail = test;
    group->test_count++;
 }
 
@@ -725,14 +816,72 @@ static void cbelt_print_indented(const char *msg) {
    const char *p = msg;
    const char *nl;
    while ((nl = strchr(p, '\n')) != NULL) {
-      fprintf(stderr, "    %.*s\n", (int)(nl - p), p);
+      printf("    %.*s\n", (int)(nl - p), p);
       p = nl + 1;
    }
    if (*p)
-      fprintf(stderr, "    %s\n", p);
+      printf("    %s\n", p);
 }
 
-/* Public API implementation */
+/*---------------------------------------------------------------------------
+ * Color helpers (respect runtime config)
+ *--------------------------------------------------------------------------*/
+static int cbelt_color_enabled(void) {
+   if (cbelt_internal_config.color == 2)
+      return 1;
+   if (cbelt_internal_config.color == 0)
+      return 0;
+   /* auto: check if stdout is a terminal */
+#ifdef _WIN32
+   {
+      HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+      if (h != INVALID_HANDLE_VALUE) {
+         DWORD mode = 0;
+         return GetConsoleMode(h, &mode) != 0;
+      }
+      return 0;
+   }
+#else
+   return isatty(fileno(stdout));
+#endif
+}
+
+static const char *cbelt_color(const char *ansi) {
+   return cbelt_color_enabled() ? ansi : "";
+}
+
+/*---------------------------------------------------------------------------
+ * Filter matching
+ *--------------------------------------------------------------------------*/
+static int cbelt_test_matches(const char *filter, const char *group_name,
+                              const char *test_name) {
+   if (!filter || filter[0] == '\0')
+      return 1;
+
+   /* Try matching "group.test_name" as prefix */
+   size_t flen = strlen(filter);
+   char full_name[1024];
+   cbelt_snprintf_s(full_name, sizeof(full_name), "%s.%s", group_name,
+                    test_name);
+
+   /* Simple prefix match */
+   if (strncmp(full_name, filter, flen) == 0)
+      return 1;
+
+   /* Also try matching group name alone */
+   if (strncmp(group_name, filter, flen) == 0)
+      return 1;
+
+   /* Also try matching test name alone */
+   if (strncmp(test_name, filter, flen) == 0)
+      return 1;
+
+   return 0;
+}
+
+/*---------------------------------------------------------------------------
+ * Public API: registration
+ *--------------------------------------------------------------------------*/
 void cbelt_register_test(const char *group_name, const char *test_name,
                          test_func_t func) {
    const char *name = group_name ? group_name : "(ungrouped)";
@@ -786,15 +935,32 @@ void cbelt_set_default_timeout(int seconds) {
    if (seconds > 0) {
       cbelt_global_default_timeout_s = seconds;
    } else if (seconds < 0) {
-      cbelt_global_default_timeout_s = -1; // No timeout
+      cbelt_global_default_timeout_s = -1;
    }
 }
+
+/*---------------------------------------------------------------------------
+ * Sandboxed test execution
+ *--------------------------------------------------------------------------*/
+#ifdef _WIN32
+typedef struct {
+   test_func_t func;
+   char error_buf[512];
+   int result;
+} cbelt_sandbox_work_t;
+
+static DWORD WINAPI cbelt_sandbox_thread(LPVOID arg) {
+   cbelt_sandbox_work_t *work = (cbelt_sandbox_work_t *)arg;
+   work->result = work->func();
+   strcpy(work->error_buf, cbelt_error_buf);
+   return 0;
+}
+#endif
 
 static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
 #ifdef __linux__
    int pipefd[2];
    if (pipe(pipefd) == -1) {
-      // Pipe creation failed - fall back to no error reporting
       perror("pipe");
       return func();
    }
@@ -814,14 +980,12 @@ static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
    if (pid == 0) {
       close(pipefd[0]);
 
-      // Set timeout unless its a negative value
       if (timeout_s > 0) {
          alarm(timeout_s);
       }
 
       int result = func();
 
-      // Send error message to parent if there's one
       if (cbelt_error_buf[0] != '\0') {
          write(pipefd[1], cbelt_error_buf, strlen(cbelt_error_buf) + 1);
       }
@@ -832,7 +996,6 @@ static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
 
    close(pipefd[1]);
 
-   // Read error message from child (non-blocking or with timeout)
    ssize_t bytes_read =
        read(pipefd[0], cbelt_error_buf, sizeof(cbelt_error_buf) - 1);
    if (bytes_read > 0) {
@@ -869,15 +1032,47 @@ static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
    }
 
    return TEST_FAILURE;
+#elif defined(_WIN32)
+   cbelt_sandbox_work_t work;
+   work.func = func;
+   work.error_buf[0] = '\0';
+   work.result = TEST_FAILURE;
+
+   HANDLE thread = CreateThread(NULL, 0, cbelt_sandbox_thread, &work, 0, NULL);
+   if (!thread) {
+      /* Fallback: run in-process */
+      return func();
+   }
+
+   DWORD timeout_ms = timeout_s > 0 ? (DWORD)timeout_s * 1000 : INFINITE;
+   DWORD wait_result = WaitForSingleObject(thread, timeout_ms);
+
+   if (wait_result == WAIT_TIMEOUT) {
+      TerminateThread(thread, 1);
+      CloseHandle(thread);
+      cbelt_snprintf_s(
+          cbelt_error_buf, sizeof(cbelt_error_buf),
+          "Test timed out after %d seconds (infinite loop or hang)", timeout_s);
+      return TEST_CRASH;
+   }
+
+   CloseHandle(thread);
+
+   /* Copy error buffer from worker thread back to our thread-local buffer */
+   strcpy(cbelt_error_buf, work.error_buf);
+
+   return work.result == 0 ? TEST_SUCCESS : TEST_FAILURE;
 #else
    (void)timeout_s;
    return func();
 #endif
 }
 
+/*---------------------------------------------------------------------------
+ * Spinner (Linux fork-based, respects runtime config)
+ *--------------------------------------------------------------------------*/
 #ifdef __linux__
 static void cbelt_spinner_process(const char *test_name) {
-   // Ignore SIGINT so parent handles it
    signal(SIGINT, SIG_IGN);
 
    const char *spinner_frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼",
@@ -891,12 +1086,10 @@ static void cbelt_spinner_process(const char *test_name) {
 
    close(spinner_pipe[1]);
 
-   // Make read end non-blocking
    int flags = fcntl(spinner_pipe[0], F_GETFL, 0);
    fcntl(spinner_pipe[0], F_SETFL, flags | O_NONBLOCK);
 
    while (1) {
-      // Check if parent wants spinner to stop
       if (read(spinner_pipe[0], &c, 1) > 0) {
          break;
       }
@@ -907,7 +1100,6 @@ static void cbelt_spinner_process(const char *test_name) {
       usleep(80000);
    }
 
-   // Clear the line completely before exiting
    printf("\r\x1b[2K\r");
    fflush(stdout);
 
@@ -922,27 +1114,24 @@ static void cbelt_spinner_stop(void) {
       if (written != 1)
          kill(spinner_pid, SIGTERM);
 
-      // Wait for child to clean up and exit
       int status;
       waitpid(spinner_pid, &status, 0);
 
       close(spinner_pipe[1]);
       spinner_pid = 0;
 
-      printf(CBELT_CLEAR_LINE);
+      printf("%s", CBELT_CLEAR_LINE);
       fflush(stdout);
    }
 }
 #endif
 
-// Start spinner in background process
 static void cbelt_spinner_start(const char *test_name) {
-#ifdef CBELT_DISABLE_SPINNER
-   (void)test_name;
-   return;
-#else
+   if (!cbelt_internal_config.spinner || cbelt_internal_config.quiet) {
+      (void)test_name;
+      return;
+   }
 #ifdef __linux__
-   // Linux implementation with fork/pipe
    if (spinner_pid != 0) {
       cbelt_spinner_stop();
    }
@@ -967,42 +1156,41 @@ static void cbelt_spinner_start(const char *test_name) {
 
    close(spinner_pipe[0]);
 #else
-   // Non-Linux fallback (Windows, etc.)
    printf("  %s...", test_name);
    fflush(stdout);
-#endif
 #endif
 }
 
 static void cbelt_spinner_update_result(const char *test_name,
-
                                         TestResult result) {
-#ifdef CBELT_DISABLE_SPINNER
-#else
-#ifdef __linux__
-   if (spinner_pid != 0) {
-      cbelt_spinner_stop();
+   /* In quiet mode, passing tests produce no output at all */
+   if (cbelt_internal_config.quiet && result == TEST_SUCCESS) {
+      (void)test_name;
+      return;
    }
+
+   const char *green = cbelt_color(CBELT_COLOR_GREEN);
+   const char *red = cbelt_color(CBELT_COLOR_RED);
+   const char *reset = cbelt_color(CBELT_COLOR_RESET);
+
+   /* Clear spinner line if spinner was active */
+   if (cbelt_internal_config.spinner) {
+#ifdef __linux__
+      if (spinner_pid != 0) {
+         cbelt_spinner_stop();
+      }
 #endif
-   fflush(stdout);
-   printf(CBELT_CLEAR_LINE);
-   fflush(stdout);
-#endif
+      fflush(stdout);
+      printf("%s", CBELT_CLEAR_LINE);
+      fflush(stdout);
+   }
 
    if (result == TEST_SUCCESS) {
-      printf("  " CBELT_COLOR_GREEN "%s"
-#ifdef CBELT_DISABLE_COLOR
-             ": PASSED"
-#endif
-             CBELT_COLOR_RESET "\n",
-             test_name);
+      if (!cbelt_internal_config.quiet) {
+         printf("  %s%s%s\n", green, test_name, reset);
+      }
    } else {
-      printf("  " CBELT_COLOR_RED "%s"
-#ifdef CBELT_DISABLE_COLOR
-             ": FAILED"
-#endif
-             CBELT_COLOR_RESET "\n",
-             test_name);
+      printf("  %s%s%s\n", red, test_name, reset);
       if (cbelt_error_buf[0]) {
          cbelt_print_indented(cbelt_error_buf);
       }
@@ -1010,49 +1198,69 @@ static void cbelt_spinner_update_result(const char *test_name,
    fflush(stdout);
 }
 
-#ifdef _WIN32
-#ifndef CBELT_DISABLE_SPINNER
-static void cbelt_enable_ansi(void) {
-   HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
-   if (stdout_handle != INVALID_HANDLE_VALUE) {
-      DWORD mode = 0;
-      if (GetConsoleMode(stdout_handle, &mode)) {
-         SetConsoleMode(stdout_handle,
-                        mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-      }
-   }
-}
-#endif
-#endif
+/*---------------------------------------------------------------------------
+ * Run a single group's tests
+ *--------------------------------------------------------------------------*/
+typedef struct {
+   cbelt_group_t **groups;
+   int group_count;
+   int passed;
+   int failed;
+   cbelt_mutex_t *print_mutex;
+} cbelt_group_work_t;
 
-int cbelt_run_all_tests(void) {
-#ifndef CBELT_DISABLE_SPINNER
-#ifdef _WIN32
-   cbelt_enable_ansi();
-#endif
-#endif
-
+static void cbelt_run_group(cbelt_group_work_t *work) {
    int total_passed = 0;
    int total_failed = 0;
-   cbelt_group_t *group = cbelt_groups;
+   const cbelt_config_t *cfg = &cbelt_internal_config;
+   const char *bold = cbelt_color(CBELT_COLOR_BOLD);
+   const char *cyan = cbelt_color(CBELT_COLOR_CYAN);
+   const char *reset = cbelt_color(CBELT_COLOR_RESET);
 
-   if (cbelt_global_setup)
-      cbelt_global_setup();
+   int gi;
+   for (gi = 0; gi < work->group_count; gi++) {
+      cbelt_group_t *group = work->groups[gi];
 
-   while (group) {
-      printf("\n" CBELT_COLOR_BOLD CBELT_COLOR_CYAN
-             "=== %s ===" CBELT_COLOR_RESET "\n",
-             group->name);
+      /* Skip group entirely if no tests match the filter */
+      {
+         cbelt_test_t *scan = group->tests;
+         int has_matching = 0;
+         while (scan) {
+            if (cbelt_test_matches(cfg->filter, group->name, scan->name)) {
+               has_matching = 1;
+               break;
+            }
+            scan = scan->next;
+         }
+         if (!has_matching)
+            continue;
+      }
+
+      /* In non-quiet mode, print header immediately */
+      int header_printed = 0;
+      if (!cfg->quiet) {
+         cbelt_mutex_lock(work->print_mutex);
+         printf("\n%s%s=== %s ===%s\n", bold, cyan, group->name, reset);
+         cbelt_mutex_unlock(work->print_mutex);
+         header_printed = 1;
+      }
 
       if (group->group_setup)
          group->group_setup();
 
       cbelt_test_t *test = group->tests;
       while (test) {
-         // Reset error buffer and timeout for this test
+         /* Apply filter */
+         if (!cbelt_test_matches(cfg->filter, group->name, test->name)) {
+            test = test->next;
+            continue;
+         }
+
          cbelt_error_buf[0] = '\0';
 
-         // Determine timeout
+         /* Remember whether redirect was already active before this test */
+         int redirect_was_active = cbelt_redirect_active;
+
          int timeout_s = cbelt_global_default_timeout_s;
          if (test->timeout_s != 0) {
             timeout_s = test->timeout_s;
@@ -1068,7 +1276,19 @@ int cbelt_run_all_tests(void) {
          if (group->teardown)
             group->teardown();
 
+         /* Auto-reset stdout only if this test started the redirect */
+         if (!redirect_was_active) {
+            cbelt_reset_output();
+         }
+
+         cbelt_mutex_lock(work->print_mutex);
+         /* In quiet mode, defer header until first failure */
+         if (!header_printed && result == TEST_FAILURE) {
+            printf("\n%s%s=== %s ===%s\n", bold, cyan, group->name, reset);
+            header_printed = 1;
+         }
          cbelt_spinner_update_result(test->name, result);
+         cbelt_mutex_unlock(work->print_mutex);
 
          result == TEST_SUCCESS ? total_passed++ : total_failed++;
 
@@ -1077,19 +1297,361 @@ int cbelt_run_all_tests(void) {
 
       if (group->group_teardown)
          group->group_teardown();
+   }
 
-      group = group->next;
+   work->passed = total_passed;
+   work->failed = total_failed;
+}
+
+/* Thread wrapper functions */
+#if defined(__linux__)
+static void *cbelt_run_group_thread(void *arg) {
+   cbelt_run_group((cbelt_group_work_t *)arg);
+   return NULL;
+}
+#elif defined(_WIN32)
+static DWORD WINAPI cbelt_run_group_thread(LPVOID arg) {
+   cbelt_run_group((cbelt_group_work_t *)arg);
+   return 0;
+}
+#endif
+
+/*---------------------------------------------------------------------------
+ * CLI argument parsing
+ *--------------------------------------------------------------------------*/
+static void cbelt_print_usage(const char *prog_name) {
+   printf("Usage: %s [OPTIONS]\n\n", prog_name);
+   printf("Options:\n");
+   printf("  -q, --quiet           Only show failing tests and summary\n");
+   printf("  -f, --filter PATTERN  Only run tests matching PATTERN (prefix "
+          "match on\n");
+   printf("                        group.test_name, group name, or test "
+          "name)\n");
+   printf("  --no-spinner          Disable animated spinner\n");
+   printf("  --color auto|always|never\n");
+   printf("                        Control colored output (default: auto)\n");
+   printf("  -j, --jobs N          Run tests in parallel with N threads "
+          "(default: 1)\n");
+   printf("  -h, --help            Show this help message\n");
+}
+
+void cbelt_parse_args(int argc, char **argv) {
+   /* Set defaults */
+   cbelt_internal_config.quiet = 0;
+   cbelt_internal_config.spinner = 1;
+   cbelt_internal_config.color = 1; /* auto */
+   cbelt_internal_config.jobs = 1;
+   cbelt_internal_config.filter = NULL;
+
+   if (!argv)
+      return;
+
+   int i;
+   for (i = 1; i < argc; i++) {
+      if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
+         cbelt_internal_config.quiet = 1;
+      } else if (strcmp(argv[i], "-f") == 0 ||
+                 strcmp(argv[i], "--filter") == 0) {
+         if (i + 1 < argc) {
+            cbelt_internal_config.filter = argv[++i];
+         } else {
+            fprintf(stderr, "Error: --filter requires a PATTERN argument\n");
+         }
+      } else if (strcmp(argv[i], "--no-spinner") == 0) {
+         cbelt_internal_config.spinner = 0;
+      } else if (strncmp(argv[i], "--color=", 8) == 0) {
+         const char *val = argv[i] + 8;
+         if (strcmp(val, "auto") == 0)
+            cbelt_internal_config.color = 1;
+         else if (strcmp(val, "always") == 0)
+            cbelt_internal_config.color = 2;
+         else if (strcmp(val, "never") == 0)
+            cbelt_internal_config.color = 0;
+         else
+            fprintf(stderr, "Error: --color expects auto|always|never\n");
+      } else if (strcmp(argv[i], "--color") == 0) {
+         if (i + 1 < argc) {
+            i++;
+            if (strcmp(argv[i], "auto") == 0)
+               cbelt_internal_config.color = 1;
+            else if (strcmp(argv[i], "always") == 0)
+               cbelt_internal_config.color = 2;
+            else if (strcmp(argv[i], "never") == 0)
+               cbelt_internal_config.color = 0;
+            else
+               fprintf(stderr, "Error: --color expects auto|always|never\n");
+         } else {
+            fprintf(stderr, "Error: --color requires auto|always|never\n");
+         }
+      } else if (strcmp(argv[i], "-j") == 0 || strcmp(argv[i], "--jobs") == 0) {
+         if (i + 1 < argc) {
+            i++;
+            int n = atoi(argv[i]);
+            cbelt_internal_config.jobs = n > 0 ? n : 1;
+         } else {
+            fprintf(stderr, "Error: --jobs requires a number\n");
+         }
+      } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+         cbelt_print_usage(argv[0]);
+         exit(0);
+      } else {
+         fprintf(stderr, "Unknown option: %s\n", argv[i]);
+         fprintf(stderr, "Use -h or --help for usage.\n");
+         exit(1);
+      }
+   }
+}
+
+/*---------------------------------------------------------------------------
+ * Windows ANSI enablement (respects runtime config)
+ *--------------------------------------------------------------------------*/
+#ifdef _WIN32
+static void cbelt_enable_ansi(void) {
+   HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+   if (stdout_handle != INVALID_HANDLE_VALUE) {
+      DWORD mode = 0;
+      if (GetConsoleMode(stdout_handle, &mode)) {
+         SetConsoleMode(stdout_handle,
+                        mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+      }
+   }
+}
+#endif
+
+/*---------------------------------------------------------------------------
+ * Main entry points
+ *--------------------------------------------------------------------------*/
+int cbelt_run_all_tests_with_args(int argc, char **argv) {
+   cbelt_parse_args(argc, argv);
+
+   /* Enable ANSI on Windows (needed for any color output at all) */
+#ifdef _WIN32
+   cbelt_enable_ansi();
+#endif
+
+   return cbelt_run_tests();
+}
+
+/* Run tests with the internal config */
+int cbelt_run_tests(void) {
+   int total_passed = 0;
+   int total_failed = 0;
+
+   if (cbelt_global_setup)
+      cbelt_global_setup();
+
+   if (cbelt_internal_config.jobs > 1) {
+/* --- Parallel execution --- */
+#if defined(CBELT_NO_THREADING)
+      fprintf(stderr, "Warning: threading not supported on this platform, "
+                      "falling back to serial execution\n");
+      cbelt_internal_config.jobs = 1;
+#else
+      /* Count groups and collect them into an array */
+      int group_count = 0;
+      cbelt_group_t *g = cbelt_groups;
+      while (g) {
+         group_count++;
+         g = g->next;
+      }
+
+      if (group_count == 0) {
+         if (cbelt_global_teardown)
+            cbelt_global_teardown();
+         const char *gbold = cbelt_color(CBELT_COLOR_BOLD);
+         const char *greset = cbelt_color(CBELT_COLOR_RESET);
+         printf("\n%s================================%s\n", gbold, greset);
+         printf("0 passed, 0 failed\n");
+         return 0;
+      }
+
+      cbelt_group_t **group_array = (cbelt_group_t **)calloc(
+          (size_t)group_count, sizeof(cbelt_group_t *));
+      g = cbelt_groups;
+      int gi = 0;
+      while (g) {
+         group_array[gi++] = g;
+         g = g->next;
+      }
+
+      cbelt_mutex_t print_mutex;
+      cbelt_mutex_init(&print_mutex);
+
+      int num_threads = group_count < cbelt_internal_config.jobs
+                            ? group_count
+                            : cbelt_internal_config.jobs;
+      cbelt_thread_t *threads =
+          (cbelt_thread_t *)calloc((size_t)num_threads, sizeof(cbelt_thread_t));
+      cbelt_group_work_t *works = (cbelt_group_work_t *)calloc(
+          (size_t)num_threads, sizeof(cbelt_group_work_t));
+
+      /* Chunk groups across threads */
+      int base = group_count / num_threads;
+      int rem = group_count % num_threads;
+      int pos = 0;
+      for (int ti = 0; ti < num_threads; ti++) {
+         works[ti].group_count = base + (ti < rem ? 1 : 0);
+         works[ti].groups = &group_array[pos];
+         works[ti].print_mutex = &print_mutex;
+         pos += works[ti].group_count;
+      }
+
+      /* Create threads */
+      for (int ti = 0; ti < num_threads; ti++) {
+         cbelt_thread_create(&threads[ti], cbelt_run_group_thread, &works[ti]);
+      }
+
+      /* Join all threads and accumulate results */
+      for (int ti = 0; ti < num_threads; ti++) {
+         cbelt_thread_join(threads[ti]);
+         total_passed += works[ti].passed;
+         total_failed += works[ti].failed;
+      }
+
+      free(group_array);
+      free(threads);
+      free(works);
+      cbelt_mutex_destroy(&print_mutex);
+#endif
+   } else {
+      /* --- Serial execution --- */
+      /* Build group array for the work struct */
+      int group_count = 0;
+      cbelt_group_t *gc = cbelt_groups;
+      while (gc) {
+         group_count++;
+         gc = gc->next;
+      }
+      cbelt_group_t **group_array = (cbelt_group_t **)calloc(
+          (size_t)group_count, sizeof(cbelt_group_t *));
+      gc = cbelt_groups;
+      for (int gi = 0; gi < group_count; gi++) {
+         group_array[gi] = gc;
+         gc = gc->next;
+      }
+
+      cbelt_group_work_t work;
+      cbelt_mutex_t serial_mutex;
+      cbelt_mutex_init(&serial_mutex);
+      work.groups = group_array;
+      work.group_count = group_count;
+      work.print_mutex = &serial_mutex;
+      cbelt_run_group(&work);
+      total_passed += work.passed;
+      total_failed += work.failed;
+      free(group_array);
+      cbelt_mutex_destroy(&serial_mutex);
    }
 
    if (cbelt_global_teardown)
       cbelt_global_teardown();
 
-   printf("\n" CBELT_COLOR_BOLD
-          "================================\n" CBELT_COLOR_RESET);
-   printf(CBELT_COLOR_GREEN "%d passed" CBELT_COLOR_RESET ", " CBELT_COLOR_RED
-                            "%d failed" CBELT_COLOR_RESET "\n",
-          total_passed, total_failed);
+   const char *green = cbelt_color(CBELT_COLOR_GREEN);
+   const char *red = cbelt_color(CBELT_COLOR_RED);
+   const char *bold = cbelt_color(CBELT_COLOR_BOLD);
+   const char *reset = cbelt_color(CBELT_COLOR_RESET);
+
+   printf("\n%s================================%s\n", bold, reset);
+   printf("%s%d passed%s, %s%d failed%s\n", green, total_passed, reset, red,
+          total_failed, reset);
+
    return total_failed > 0 ? 1 : 0;
+}
+
+/* Backward-compatible wrapper */
+int cbelt_run_all_tests(void) { return cbelt_run_all_tests_with_args(0, NULL); }
+
+/*---------------------------------------------------------------------------
+ * Output redirect implementation
+ *--------------------------------------------------------------------------*/
+void cbelt_set_output(char *buf, size_t size) {
+   if (!buf || size == 0)
+      return;
+
+   /* Don't re-enter if already redirecting */
+   if (cbelt_redirect_active)
+      return;
+
+#ifdef _WIN32
+   int fds[2];
+   if (_pipe(fds, size, _O_BINARY) != 0)
+      return;
+#else
+   int fds[2];
+   if (pipe(fds) != 0)
+      return;
+#endif
+
+   cbelt_saved_stdout_fd = dup(fileno(stdout));
+   if (cbelt_saved_stdout_fd == -1) {
+      close(fds[0]);
+      close(fds[1]);
+      return;
+   }
+
+   cbelt_capture_pipe_read = fds[0];
+   cbelt_capture_pipe_write = fds[1];
+
+   fflush(stdout);
+   dup2(cbelt_capture_pipe_write, fileno(stdout));
+   close(cbelt_capture_pipe_write); /* only the dup2'd fd stays open */
+
+   cbelt_capture_buf = buf;
+   cbelt_capture_buf_size = size;
+   cbelt_redirect_active = 1;
+}
+
+void cbelt_set_output_file(FILE *f) {
+   if (!f)
+      return;
+   if (cbelt_redirect_active)
+      return;
+
+   cbelt_saved_stdout_fd = dup(fileno(stdout));
+   if (cbelt_saved_stdout_fd == -1)
+      return;
+
+   fflush(stdout);
+   dup2(fileno(f), fileno(stdout));
+
+   cbelt_capture_buf = NULL;
+   cbelt_capture_buf_size = 0;
+   cbelt_redirect_active = 1;
+}
+
+void cbelt_reset_output(void) {
+   if (!cbelt_redirect_active)
+      return;
+
+   fflush(stdout);
+
+   /* Restore original stdout */
+   if (cbelt_saved_stdout_fd != -1) {
+      dup2(cbelt_saved_stdout_fd, fileno(stdout));
+      close(cbelt_saved_stdout_fd);
+      cbelt_saved_stdout_fd = -1;
+   }
+
+   /* Read captured output into buffer */
+   if (cbelt_capture_buf && cbelt_capture_buf_size > 0) {
+      size_t total = 0;
+      int n;
+      while (total < cbelt_capture_buf_size - 1 &&
+             (n = (int)read(cbelt_capture_pipe_read, cbelt_capture_buf + total,
+                            cbelt_capture_buf_size - 1 - total)) > 0) {
+         total += (size_t)n;
+      }
+      cbelt_capture_buf[total] = '\0';
+   }
+
+   if (cbelt_capture_pipe_read != -1) {
+      close(cbelt_capture_pipe_read);
+      cbelt_capture_pipe_read = -1;
+   }
+
+   cbelt_capture_buf = NULL;
+   cbelt_capture_buf_size = 0;
+   cbelt_redirect_active = 0;
 }
 
 #endif /* CBELT_IMPLEMENTATION */
