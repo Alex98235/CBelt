@@ -735,8 +735,9 @@ const char *cbelt_current_group_name = NULL;
 _Thread_local char cbelt_error_buf[512];
 static int cbelt_global_default_timeout_s = CBELT_SANDBOX_DEFAULT_TIMEOUT_S;
 #ifndef _WIN32
-static pid_t spinner_pid = 0;
+static volatile pid_t spinner_pid = 0;
 static int spinner_pipe[2];
+static volatile pid_t cbelt_current_child_pid = 0;
 #endif
 
 /*---------------------------------------------------------------------------
@@ -996,6 +997,9 @@ static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
 
    close(pipefd[1]);
 
+   /* Track this PID so SIGINT handler can kill it */
+   cbelt_current_child_pid = pid;
+
    ssize_t bytes_read =
        read(pipefd[0], cbelt_error_buf, sizeof(cbelt_error_buf) - 1);
    if (bytes_read > 0) {
@@ -1006,7 +1010,12 @@ static TestResult cbelt_run_test_in_sandbox(test_func_t func, int timeout_s) {
    close(pipefd[0]);
 
    int status;
-   pid_t wait_result = waitpid(pid, &status, 0);
+   pid_t wait_result;
+   do {
+      wait_result = waitpid(pid, &status, 0);
+   } while (wait_result == -1 && errno == EINTR);
+
+   cbelt_current_child_pid = 0;
 
    if (wait_result == -1) {
       perror("waitpid");
@@ -1427,6 +1436,25 @@ static void cbelt_enable_ansi(void) {
 #endif
 
 /*---------------------------------------------------------------------------
+ * SIGINT handler - kills forked children and spinner, then terminates
+ *--------------------------------------------------------------------------*/
+#ifdef __linux__
+static void cbelt_sigint_handler(int sig) {
+   (void)sig;
+   /* Kill the spinner process if alive */
+   if (spinner_pid != 0)
+      kill(spinner_pid, SIGTERM);
+   /* Kill the currently running test child if any */
+   if (cbelt_current_child_pid != 0)
+      kill((pid_t)cbelt_current_child_pid, SIGTERM);
+   /* Terminate immediately (async-signal-safe).
+    * _Exit is used (rather than signal/raise) to avoid depending on
+    * pending signal delivery once the interrupted function resumes. */
+   _Exit(128 + SIGINT);
+}
+#endif
+
+/*---------------------------------------------------------------------------
  * Main entry points
  *--------------------------------------------------------------------------*/
 int cbelt_run_all_tests_with_args(int argc, char **argv) {
@@ -1448,6 +1476,11 @@ int cbelt_run_tests(void) {
 
    if (cbelt_global_setup)
       cbelt_global_setup();
+
+   /* Install SIGINT handler to clean up forked children and spinner */
+#ifdef __linux__
+   signal(SIGINT, cbelt_sigint_handler);
+#endif
 
    if (cbelt_internal_config.jobs > 1) {
 /* --- Parallel execution --- */
