@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build release archive
+      - name: Build release archives
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           ARCHIVE_DIR="cbelt-$VERSION"
@@ -28,8 +28,9 @@ jobs:
           cp cbelt.h LICENSE example_test_main.c "/tmp/$ARCHIVE_DIR/"
           cd /tmp
           tar czf "${ARCHIVE_DIR}.tar.gz" "$ARCHIVE_DIR/"
-          echo "archive_path=/tmp/${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
-          echo "archive_name=${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+          zip -r "${ARCHIVE_DIR}.zip" "$ARCHIVE_DIR/"
+          echo "archive_tar=/tmp/${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+          echo "archive_zip=/tmp/${ARCHIVE_DIR}.zip" >> $GITHUB_ENV
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -37,4 +38,6 @@ jobs:
           name: ${{ github.ref_name }}
           body: |
             See the [changelog](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}) for changes.
-          files: ${{ env.archive_path }}
+          files: |
+            ${{ env.archive_tar }}
+            ${{ env.archive_zip }}
