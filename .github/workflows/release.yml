@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  test:
+    name: Self-tests
+    uses: ./.github/workflows/self_test.yml
+
+  release:
+    name: Create release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release archive
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE_DIR="cbelt-$VERSION"
+          mkdir -p "/tmp/$ARCHIVE_DIR"
+          cp cbelt.h LICENSE example_test_main.c "/tmp/$ARCHIVE_DIR/"
+          cd /tmp
+          tar czf "${ARCHIVE_DIR}.tar.gz" "$ARCHIVE_DIR/"
+          echo "archive_path=/tmp/${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+          echo "archive_name=${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: |
+            See the [changelog](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}) for changes.
+          files: ${{ env.archive_path }}
+          generate_release_notes: true
